@@ -48,6 +48,8 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const requiresApiKeyForModels = provider === 'openrouter' || provider === 'gemini';
+  const canFetchModels = !disabled && !fetchingModels && (!requiresApiKeyForModels || Boolean(apiKey.trim()));
 
   useEffect(() => {
     setProvider(config.provider);
@@ -93,9 +95,16 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
   };
 
   const handleFetchModels = async () => {
+    if (!apiKey.trim()) {
+      toast.error(provider === 'openrouter'
+        ? '请先填写 OpenRouter API Key，再获取模型列表'
+        : '请先填写 Gemini API Key，再获取模型列表');
+      return;
+    }
+
     try {
       setFetchingModels(true);
-      const nextModels = await onFetchModels({ provider, apiKey, baseUrl: baseUrl.trim() });
+      const nextModels = await onFetchModels({ provider, apiKey: apiKey.trim(), baseUrl: baseUrl.trim() });
       if (nextModels.length === 0) {
         toast.warning('未获取到可用模型，已保留当前预置列表');
         return;
@@ -147,7 +156,7 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
                 size="sm"
                 className="h-7 px-2"
                 onClick={handleFetchModels}
-                disabled={disabled || fetchingModels || (provider === 'gemini' && !apiKey)}
+                disabled={!canFetchModels}
               >
                 <RefreshCw className={`h-3.5 w-3.5 mr-1 ${fetchingModels ? 'animate-spin' : ''}`} />
                 获取模型

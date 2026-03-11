@@ -51,10 +51,15 @@ function dedupeModels(models: ModelOption[]): ModelOption[] {
   return Array.from(new Map(models.map((model) => [model.id, model])).values());
 }
 
-async function fetchOpenRouterModels(baseUrl?: string): Promise<ModelOption[]> {
+async function fetchOpenRouterModels(apiKey: string, baseUrl?: string): Promise<ModelOption[]> {
+  if (!apiKey) {
+    throw new Error('OpenRouter 需要先填写 API Key 才能获取模型列表');
+  }
+
   const response = await fetch(`${normalizeBaseUrl(baseUrl, 'https://openrouter.ai/api/v1')}/models`, {
     method: 'GET',
     headers: {
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': window.location.origin,
       'X-Title': 'Manga2Novel',
@@ -122,7 +127,7 @@ async function fetchGeminiModels(apiKey: string, baseUrl?: string): Promise<Mode
 export async function fetchModels(config: Pick<APIConfig, 'provider' | 'apiKey' | 'baseUrl'>): Promise<ModelOption[]> {
   switch (config.provider) {
     case 'openrouter':
-      return fetchOpenRouterModels(config.baseUrl);
+      return fetchOpenRouterModels(config.apiKey, config.baseUrl);
     case 'gemini':
       return fetchGeminiModels(config.apiKey, config.baseUrl);
     default:
