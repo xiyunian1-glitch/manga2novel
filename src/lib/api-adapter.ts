@@ -51,6 +51,37 @@ function dedupeModels(models: ModelOption[]): ModelOption[] {
   return Array.from(new Map(models.map((model) => [model.id, model])).values());
 }
 
+function summarizeResponseBody(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '空响应';
+  return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
+}
+
+function looksLikeHtml(text: string): boolean {
+  return /<!doctype html|<html[\s>]/i.test(text);
+}
+
+async function parseJsonResponse<T>(
+  response: Response,
+  context: string,
+  invalidJsonHint = '返回的不是有效 JSON'
+): Promise<T> {
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`${context} (${response.status}): ${summarizeResponseBody(responseText)}`);
+  }
+
+  try {
+    return JSON.parse(responseText) as T;
+  } catch {
+    if (looksLikeHtml(responseText)) {
+      throw new Error(`${context}: 返回了 HTML 页面，请检查 API URL / 代理地址是否正确`);
+    }
+    throw new Error(`${context}: ${invalidJsonHint}`);
+  }
+}
+
 async function fetchOpenRouterModels(apiKey: string, baseUrl?: string): Promise<ModelOption[]> {
   if (!apiKey) {
     throw new Error('OpenRouter 需要先填写 API Key 才能获取模型列表');
@@ -66,12 +97,11 @@ async function fetchOpenRouterModels(apiKey: string, baseUrl?: string): Promise<
     },
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`OpenRouter 模型列表获取失败 (${response.status}): ${errorBody}`);
-  }
-
-  const data = (await response.json()) as OpenRouterModelResponse;
+  const data = await parseJsonResponse<OpenRouterModelResponse>(
+    response,
+    'OpenRouter 模型列表获取失败',
+    '返回的不是有效 JSON，请检查 API URL / 代理地址是否指向 OpenRouter 兼容接口'
+  );
   const models = Array.isArray(data.data)
     ? data.data
         .filter((item) => item?.id)
@@ -97,12 +127,11 @@ async function fetchGeminiModels(apiKey: string, baseUrl?: string): Promise<Mode
     }
   );
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini 模型列表获取失败 (${response.status}): ${errorBody}`);
-  }
-
-  const data = (await response.json()) as GeminiModelResponse;
+  const data = await parseJsonResponse<GeminiModelResponse>(
+    response,
+    'Gemini 模型列表获取失败',
+    '返回的不是有效 JSON，请检查 API URL / 代理地址是否指向 Gemini 兼容接口'
+  );
   const models = Array.isArray(data.models)
     ? data.models
         .filter((item) => {
@@ -214,12 +243,17 @@ async function callOpenRouter(
     }),
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`OpenRouter API 错误 (${response.status}): ${errorBody}`);
-  }
-
-  const data = await response.json();
+  const data = await parseJsonResponse<{
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  }>(
+    response,
+    'OpenRouter API 错误',
+    '返回的不是有效 JSON，请检查 API URL / 代理地址是否指向 OpenRouter 兼容接口'
+  );
   const rawText = data.choices?.[0]?.message?.content;
   if (!rawText) throw new Error('OpenRouter 返回空内容');
 
@@ -267,12 +301,19 @@ async function callGemini(
     }),
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini API 错误 (${response.status}): ${errorBody}`);
-  }
-
-  const data = await response.json();
+  const data = await parseJsonResponse<{
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+        }>;
+      };
+    }>;
+  }>(
+    response,
+    'Gemini API 错误',
+    '返回的不是有效 JSON，请检查 API URL / 代理地址是否指向 Gemini 兼容接口'
+  );
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!rawText) throw new Error('Gemini 返回空内容');
 
