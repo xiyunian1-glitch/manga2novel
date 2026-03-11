@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ImagePlus, X, GripVertical, Trash2, FolderOpen } from 'lucide-react';
+import { toast } from 'sonner';
 import type { ImageItem } from '@/lib/types';
 
 interface ImageUploadPanelProps {
@@ -21,6 +22,22 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFilePath(file: File): string {
+  return file.webkitRelativePath || file.name;
+}
+
+function withRelativePath(file: File, relativePath: string): File {
+  try {
+    Object.defineProperty(file, 'webkitRelativePath', {
+      configurable: true,
+      value: relativePath,
+    });
+  } catch {
+    // Ignore if the browser does not allow redefining the property.
+  }
+  return file;
 }
 
 export function ImageUploadPanel({
@@ -40,8 +57,8 @@ export function ImageUploadPanel({
 
   const sortFiles = useCallback((files: File[]) => {
     return [...files].sort((a, b) => {
-      const pathA = a.webkitRelativePath || a.name;
-      const pathB = b.webkitRelativePath || b.name;
+      const pathA = getFilePath(a);
+      const pathB = getFilePath(b);
       return pathA.localeCompare(pathB, undefined, { numeric: true, sensitivity: 'base' });
     });
   }, []);
@@ -54,6 +71,82 @@ export function ImageUploadPanel({
     },
     [onAdd, sortFiles]
   );
+
+  const openFilePicker = useCallback(() => {
+    const input = fileInputRef.current;
+    if (!input || disabled) return;
+    input.value = '';
+    input.click();
+  }, [disabled]);
+
+  const collectDirectoryFiles = useCallback(async (directoryHandle: FileSystemDirectoryHandle, parentPath = ''): Promise<File[]> => {
+    const files: File[] = [];
+    const entries = (directoryHandle as FileSystemDirectoryHandle & {
+      values: () => AsyncIterable<
+        FileSystemDirectoryHandle | (FileSystemFileHandle & { kind: 'file'; name: string })
+      >;
+    }).values();
+
+    for await (const entry of entries) {
+      const relativePath = `${parentPath}${entry.name}`;
+      if (entry.kind === 'file') {
+        const file = await entry.getFile();
+        if (file.type.startsWith('image/')) {
+          files.push(withRelativePath(file, relativePath));
+        }
+        continue;
+      }
+
+      files.push(...await collectDirectoryFiles(entry, `${relativePath}/`));
+    }
+
+    return files;
+  }, []);
+
+  const openFolderPicker = useCallback(async () => {
+    if (disabled) return;
+
+    const canUseDirectoryPicker = typeof window !== 'undefined'
+      && typeof (window as Window & { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker === 'function';
+    const isLikelyMobile = typeof navigator !== 'undefined'
+      && navigator.maxTouchPoints > 0
+      && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+    if (canUseDirectoryPicker) {
+      try {
+        const directoryHandle = await (window as unknown as {
+          showDirectoryPicker: () => Promise<FileSystemDirectoryHandle>;
+        }).showDirectoryPicker();
+        const files = sortFiles(await collectDirectoryFiles(directoryHandle));
+        if (files.length === 0) {
+          toast.warning('所选文件夹中没有可用图片');
+          return;
+        }
+        onAdd(files);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        toast.error(error instanceof Error ? error.message : '读取文件夹失败');
+      }
+      return;
+    }
+
+    if (isLikelyMobile) {
+      toast.info('当前设备通常不支持选择整个文件夹，已切换为多图上传');
+      openFilePicker();
+      return;
+    }
+
+    const input = folderInputRef.current;
+    if (!input) {
+      openFilePicker();
+      return;
+    }
+
+    input.value = '';
+    input.click();
+  }, [collectDirectoryFiles, disabled, onAdd, openFilePicker, sortFiles]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -107,24 +200,30 @@ export function ImageUploadPanel({
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
-          onClick={() => !disabled && fileInputRef.current?.click()}
+          onClick={(event) => {
+            if (disabled) return;
+            const target = event.target as HTMLElement;
+            if (target.closest('[data-picker-control="true"]')) return;
+            openFilePicker();
+          }}
         >
           <ImagePlus className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
             拖拽图片到此处，或 <span className="text-primary underline">点击选择</span>
           </p>
           <p className="text-xs text-muted-foreground mt-1">支持 JPG/PNG/WebP，也支持直接选择整個文件夹</p>
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={(e) => {
-              e.stopPropagation();
-              fileInputRef.current?.click();
-            }}>
+          <div
+            className="mt-3 flex flex-wrap items-center justify-center gap-2"
+            data-picker-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={openFilePicker}>
               <ImagePlus className="h-3.5 w-3.5 mr-1" />
               上传图片
             </Button>
-            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={(e) => {
-              e.stopPropagation();
-              folderInputRef.current?.click();
+            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
+              void openFolderPicker();
             }}>
               <FolderOpen className="h-3.5 w-3.5 mr-1" />
               上传文件夹
@@ -173,8 +272,8 @@ export function ImageUploadPanel({
                     className="h-10 w-8 object-cover rounded border shrink-0"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs truncate" title={img.file.webkitRelativePath || img.file.name}>
-                      {img.file.webkitRelativePath || img.file.name}
+                    <p className="text-xs truncate" title={getFilePath(img.file)}>
+                      {getFilePath(img.file)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {formatSize(img.originalSize)}
