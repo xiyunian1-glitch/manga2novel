@@ -1,18 +1,23 @@
 'use client';
 
+import { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { WandSparkles } from 'lucide-react';
+import { ChevronDown, ChevronUp, WandSparkles } from 'lucide-react';
 import type { CreativePreset, CreativeSettings } from '@/lib/types';
+import { composeSystemPrompt, splitSystemPrompt } from '@/lib/prompts';
 
 interface CreativeSettingsPanelProps {
   settings: CreativeSettings;
   presets: CreativePreset[];
   onUpdate: (settings: Partial<CreativeSettings>) => void;
   onApplyPreset: (presetId: string) => void;
+  onSavePreset: (name: string) => void;
+  onDeletePreset: (presetId: string) => void;
   disabled?: boolean;
 }
 
@@ -21,8 +26,48 @@ export function CreativeSettingsPanel({
   presets,
   onUpdate,
   onApplyPreset,
+  onSavePreset,
+  onDeletePreset,
   disabled,
 }: CreativeSettingsPanelProps) {
+  const [showSupplementalPrompt, setShowSupplementalPrompt] = useState(false);
+  const [showRoleAndStyle, setShowRoleAndStyle] = useState(false);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const { supplementalPrompt, roleAndStyle, systemPromptBody } = useMemo(
+    () => splitSystemPrompt(settings.systemPrompt),
+    [settings.systemPrompt]
+  );
+
+  const handleSupplementalPromptChange = (value: string) => {
+    onUpdate({ systemPrompt: composeSystemPrompt(value, roleAndStyle, systemPromptBody) });
+  };
+
+  const handleRoleAndStyleChange = (value: string) => {
+    onUpdate({ systemPrompt: composeSystemPrompt(supplementalPrompt, value, systemPromptBody) });
+  };
+
+  const handleSystemPromptBodyChange = (value: string) => {
+    onUpdate({ systemPrompt: composeSystemPrompt(supplementalPrompt, roleAndStyle, value) });
+  };
+
+  const handleSavePreset = () => {
+    const presetName = window.prompt('输入预设名称');
+    if (presetName === null) return;
+    onSavePreset(presetName);
+  };
+
+  const isBuiltInPreset = presets.some((preset) => preset.id === settings.presetId && !preset.id.startsWith('user-'));
+  const canDeletePreset = settings.presetId.startsWith('user-') && !isBuiltInPreset;
+
+  const handleDeletePreset = () => {
+    if (!canDeletePreset) return;
+    const currentPreset = presets.find((preset) => preset.id === settings.presetId);
+    const presetName = currentPreset?.name || '当前预设';
+    const confirmed = window.confirm(`确认删除预设《${presetName}》吗？`);
+    if (!confirmed) return;
+    onDeletePreset(settings.presetId);
+  };
+
   return (
     <Card className="relative z-10">
       <CardHeader className="pb-4">
@@ -33,7 +78,31 @@ export function CreativeSettingsPanel({
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="space-y-2.5">
-          <Label>风格预设</Label>
+          <div className="flex items-center justify-between gap-3">
+            <Label>风格预设</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2"
+                onClick={handleSavePreset}
+                disabled={disabled}
+              >
+                保存为预设
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2"
+                onClick={handleDeletePreset}
+                disabled={disabled || !canDeletePreset}
+              >
+                删除预设
+              </Button>
+            </div>
+          </div>
           <Select
             value={settings.presetId}
             onValueChange={(value) => value && onApplyPreset(value)}
@@ -50,6 +119,9 @@ export function CreativeSettingsPanel({
               ))}
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">
+            选择预设时只会替换“风格”内容，不会改动补充提示和系统提示词。
+          </p>
         </div>
 
         <div className="space-y-2.5">
@@ -73,16 +145,105 @@ export function CreativeSettingsPanel({
         </div>
 
         <div className="space-y-2.5">
-          <Label>System Prompt</Label>
-          <Textarea
-            value={settings.systemPrompt}
-            onChange={(event) => onUpdate({ systemPrompt: event.target.value })}
-            disabled={disabled}
-            className="min-h-56 resize-y leading-6"
-            placeholder="输入 AI 的角色设定、叙事风格、语言约束与输出要求..."
-          />
+          <div className="flex items-center justify-between gap-3">
+            <Label>特殊提示词</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setShowSupplementalPrompt((prev) => !prev)}
+              disabled={disabled}
+            >
+              {showSupplementalPrompt ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showSupplementalPrompt ? '收起' : '展开'}
+            </Button>
+          </div>
+
+          {!showSupplementalPrompt && (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里适合放额外创作强调、临时补充要求或本轮特别想强化的表达重点。它会排在整份提示词的最前面。
+            </div>
+          )}
+
+          {showSupplementalPrompt && (
+            <Textarea
+              value={supplementalPrompt}
+              onChange={(event) => handleSupplementalPromptChange(event.target.value)}
+              disabled={disabled}
+              className="min-h-24 resize-y leading-6"
+              placeholder="输入特殊提示词，例如额外创作要求、强调的表达重点或本轮特别想强化的约束..."
+            />
+          )}
+        </div>
+
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <Label>风格</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setShowRoleAndStyle((prev) => !prev)}
+              disabled={disabled}
+            >
+              {showRoleAndStyle ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showRoleAndStyle ? '收起' : '展开'}
+            </Button>
+          </div>
+
+          {!showRoleAndStyle && (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里适合放角色设定、文风走向、叙事口吻和情绪张力等经常会改的内容。
+            </div>
+          )}
+
+          {showRoleAndStyle && (
+            <Textarea
+              value={roleAndStyle}
+              onChange={(event) => handleRoleAndStyleChange(event.target.value)}
+              disabled={disabled}
+              className="min-h-28 resize-y leading-6"
+              placeholder="输入角色设定、文风方向、叙事口吻和重点强调的风格..."
+            />
+          )}
+        </div>
+
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <Label>系统提示词</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setShowSystemPrompt((prev) => !prev)}
+              disabled={disabled}
+            >
+              {showSystemPrompt ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showSystemPrompt ? '收起' : '展开'}
+            </Button>
+          </div>
+
+          {!showSystemPrompt && (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里放任务说明、输出规则和 JSON 格式要求。默认收起，减少日常编辑干扰。
+            </div>
+          )}
+
+          {showSystemPrompt && (
+            <Textarea
+              value={systemPromptBody}
+              onChange={(event) => handleSystemPromptBodyChange(event.target.value)}
+              disabled={disabled}
+              className="min-h-72 resize-y leading-6"
+              placeholder="输入不常改动的任务说明、输出规则和格式要求..."
+            />
+          )}
+
           <p className="text-xs text-muted-foreground">
-            修改后会实时参与每一轮分块请求，影响 Memory Loop 的创作风格。
+            修改后会实时参与每一轮分块请求。系统提示词更适合放结构化规则，而“风格”更适合放创作语气。
           </p>
         </div>
       </CardContent>

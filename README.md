@@ -1,38 +1,369 @@
-## Manga2Novel
+# Manga2Novel
 
-Manga2Novel is a static-exported Next.js app for turning manga image batches into novel-style text in the browser.
+Manga2Novel 是一个前端部署的漫画转小说工具。
 
-## Getting Started
+它的核心作用是：
 
-Install dependencies and run the development server:
+- 把一组漫画图片按顺序整理成连续的阅读上下文
+- 调用你配置的 AI 模型理解画面、人物关系和剧情推进
+- 自动把分镜内容改写成连贯的中文小说段落
+- 在多组图片之间维护剧情摘要和结尾细节，尽量减少“前后断裂”
+
+这个工具适合：
+
+- 把漫画分镜改写成小说
+- 做漫改文本草稿
+- 批量测试不同模型的叙事能力
+- 给同一批图片尝试不同文风预设
+
+## 工具能做什么
+
+Manga2Novel 目前支持这些能力：
+
+- 支持 `OpenRouter` 和 `Google Gemini`
+- 支持直接上传图片，也支持直接上传整个文件夹
+- 自动按顺序整理图片，支持拖拽重排
+- 自动压缩图片并转为适合发送给模型的格式
+- 按“分块”处理图片，默认每组 4 张
+- 在每一块之间传递剧情摘要和结尾信息，形成连续叙事
+- 支持暂停、继续、跳过当前块、重试当前块、重置任务
+- 支持风格预设、自定义 System Prompt、调整 Temperature
+- 支持实时预览结果
+- 支持复制结果、导出 `TXT`、导出 `MD`
+- API Key 保存在浏览器本地，并用 AES-GCM 加密后再写入 LocalStorage
+
+## 工作原理
+
+这不是一个传统“上传到你自己服务器再处理”的工具，而是一个前端直连 AI API 的工具。
+
+工作流程大致是：
+
+1. 你在浏览器里配置 API 提供商、模型、API Key
+2. 你上传漫画图片或整个图片文件夹
+3. 浏览器先在本地压缩和预处理图片
+4. 工具按顺序把图片切成若干组
+5. 每一组都会带着“前文摘要 + 上一组结尾信息”发送给模型
+6. 模型返回当前组的小说内容、剧情摘要、结尾细节
+7. 工具把这些结果累积成完整小说，并继续处理下一组
+
+这套机制的目标是让多张图片、多段剧情在输出时更连贯，而不是每一组都像独立小段落。
+
+## 使用前准备
+
+开始使用前，你需要准备：
+
+- 一个可用的 `OpenRouter` 或 `Google Gemini` API Key
+- 一组按阅读顺序整理好的漫画图片
+- 推荐使用 Chrome、Edge 这类现代浏览器
+
+建议：
+
+- 连续剧情尽量放在同一个任务里处理
+- 图片命名最好有顺序，比如 `001.jpg`、`002.jpg`
+- 如果是上传文件夹，工具会按文件路径和文件名自动排序
+
+## 使用教程
+
+### 1. 打开工具
+
+打开站点后，你会看到 5 个主要区域：
+
+- `API 配置`
+- `创作设置`
+- `漫画图片`
+- `队列配置 / 处理进度`
+- `小说预览`
+
+### 2. 配置 API
+
+先在 `API 配置` 区域完成下面几项：
+
+#### API 提供商
+
+可以选择：
+
+- `OpenRouter（推荐）`
+- `Google Gemini`
+
+如果你不确定选哪个，通常可以先用 `OpenRouter`。
+
+#### 模型
+
+点击模型选择框，可以选择要使用的模型。
+
+常见用法：
+
+- 更偏稳定、均衡：`Claude Sonnet 4`
+- 更偏强理解：`Claude Opus 4`
+- 想测试 Gemini：`Gemini 2.5 Pro` 或 `Gemini 2.5 Flash`
+- 想测试 OpenAI 系列：`GPT-4.1`
+
+你也可以点击 `获取模型`，从当前提供商动态拉取可用模型列表。
+
+#### API URL / 代理地址
+
+这一项是可选的。
+
+默认情况下：
+
+- OpenRouter 使用 `https://openrouter.ai/api/v1`
+- Gemini 使用 `https://generativelanguage.googleapis.com/v1beta`
+
+只有在你要接自定义网关、代理或兼容接口时，才需要改这里。
+
+#### API Key
+
+填入你的 API Key 后点击 `保存`。
+
+保存后：
+
+- Key 会存在浏览器本地
+- 会先加密再写入 LocalStorage
+- 下次重新打开页面时会自动读取
+
+### 3. 上传漫画图片
+
+在 `漫画图片` 区域里，你可以：
+
+- 点击 `上传图片` 选择多张图片
+- 点击 `上传文件夹` 直接导入整个目录
+- 也可以把图片直接拖进上传区
+
+上传后你会看到：
+
+- 每张图片的缩略图
+- 原始文件名
+- 原始大小和压缩后大小
+- 当前状态
+
+如果顺序不对，可以直接拖拽列表重新排序。
+
+这一步很重要，因为输出小说的叙事顺序完全依赖图片顺序。
+
+### 4. 设置创作风格
+
+在 `创作设置` 区域里，主要有三个东西：
+
+#### 风格预设
+
+你可以直接选现成文风，比如：
+
+- 专业漫改小说家
+- 日式轻小说
+- 硬核科幻
+- 武侠修仙
+- 克苏鲁感官
+- 成人文学风格
+
+切换预设后，工具会自动替换对应的 System Prompt。
+
+#### Temperature
+
+它控制文本发散程度：
+
+- 更低：更稳、更收敛
+- 更高：更自由、更有变化
+
+如果你要更稳定的剧情改写，可以把它调低一点。
+
+#### System Prompt
+
+这里可以直接自定义模型的人设、风格和输出规则。
+
+如果你对结果有明确要求，比如：
+
+- 想更文学化
+- 想更像轻小说
+- 想压缩篇幅
+- 想突出心理描写
+
+都可以在这里细调。
+
+### 5. 设置队列参数
+
+在 `队列配置` 区域可以调这些参数：
+
+#### 每组图片数（Chunk Size）
+
+默认是 `4`。
+
+含义是：
+
+- 每次把几张图片作为一组发给模型
+
+一般建议：
+
+- 画面信息比较密：用 `2` 到 `4`
+- 分镜连续而且每页信息不复杂：可以用 `4` 到 `6`
+- 如果想让一整小段剧情合并处理，可以调大
+
+#### 最大重试次数
+
+默认是 `3`。
+
+当模型调用失败时，工具会自动重试。
+
+#### 重试间隔
+
+默认是 `2000ms`。
+
+失败后会按指数退避重试。
+
+### 6. 开始转换
+
+确认已经：
+
+- 填好了 API Key
+- 选好了模型
+- 上传了图片
+
+然后点击顶部的 `开始转换`。
+
+任务开始后，工具会先：
+
+- 压缩图片
+- 分块
+- 顺序调用模型
+
+你会在 `处理进度` 和 `小说预览` 里看到实时变化。
+
+### 7. 处理中怎么控制
+
+如果中途需要人工介入，可以用这些按钮：
+
+- `暂停`：先停下来
+- `继续`：从当前进度继续
+- `跳过`：跳过当前这组出错或不满意的图片
+- `重试`：重新处理当前块
+- `重置`：清空当前处理状态，重新开始
+
+适合这些情况：
+
+- 某一组输出明显跑偏
+- 某次 API 请求失败
+- 想在处理中途修改参数后再继续
+
+### 8. 查看和导出结果
+
+右侧 `小说预览` 会按块展示生成结果。
+
+生成完成后你可以：
+
+- 点击 `复制`
+- 点击 `下载 TXT`
+- 点击 `下载 MD`
+
+如果你后续还要手工润色，通常推荐导出 `MD`。
+
+## 使用建议
+
+为了得到更稳定的结果，建议这样用：
+
+- 优先保证图片顺序正确
+- 一次任务尽量只处理同一段连续剧情
+- 如果剧情跳跃很大，可以拆成多个任务
+- 如果模型经常漏内容，把 `Chunk Size` 调小
+- 如果文字太平、太保守，可以略微调高 `Temperature`
+- 如果文字太散、太飘，可以略微调低 `Temperature`
+- 先用预设跑一版，再做 Prompt 微调
+
+## 隐私和数据流说明
+
+这个工具没有你自己的后端服务，主要处理逻辑在浏览器里完成。
+
+但要注意：
+
+- 图片预处理发生在本地浏览器
+- API Key 保存在本地浏览器
+- 真正开始生成时，图片内容、上下文提示词和配置会直接从浏览器发送到你选择的 AI 提供商
+
+也就是说：
+
+- 你的图片不会先经过本项目自建服务器
+- 但会发送给 `OpenRouter` 或 `Google Gemini` 之类的目标模型服务
+
+如果你处理的是敏感图片，请先确认你所选 API 提供商的隐私策略。
+
+## 常见问题
+
+### 1. 为什么点了开始没反应？
+
+先检查：
+
+- 有没有填写并保存 API Key
+- 有没有上传至少一张图片
+- 当前模型是否可用
+
+### 2. 为什么获取模型失败？
+
+常见原因：
+
+- API Key 无效
+- 网络不通
+- 代理地址填错
+- Gemini 在未填写 API Key 时无法拉取模型列表
+
+### 3. 为什么结果前后衔接不好？
+
+可以尝试：
+
+- 降低每组图片数
+- 保证图片顺序正确
+- 使用更强的模型
+- 在 System Prompt 里强调“承接前文、保持人物一致性”
+
+### 4. 为什么某一块会暂停？
+
+这是设计行为。
+
+如果某块处理失败，工具会暂停并等待你决定：
+
+- 重试
+- 跳过
+- 调整配置后继续
+
+### 5. 为什么重新打开网页后配置还在？
+
+因为工具会把这些内容保存在浏览器本地：
+
+- API Key：加密存储
+- provider / model / baseUrl
+- 创作设置
+- 队列设置
+
+## 本地开发
+
+安装依赖并启动开发环境：
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+打开：
 
-## GitHub Pages
+```text
+http://localhost:3000
+```
 
-Build a Pages-ready static export with:
+## 构建与部署
+
+构建静态站点：
 
 ```bash
 npm run build
 ```
 
-That build now writes `out/.nojekyll` automatically so GitHub Pages will serve the `/_next` assets instead of returning `404`.
+构建完成后会自动生成适用于 GitHub Pages 的 `out/.nojekyll`。
 
-Recommended setup:
+推荐部署方式：
 
-- Push this source repo to GitHub.
-- In GitHub `Settings > Pages`, set the source to `GitHub Actions`.
-- Let `.github/workflows/deploy.yml` publish the `out/` directory.
+- 把源码推到 GitHub
+- 在 GitHub `Settings > Pages` 中把 Source 设为 `GitHub Actions`
+- 由 [.github/workflows/deploy.yml](./.github/workflows/deploy.yml) 自动发布
 
-If you temporarily deploy by committing exported files directly to a branch, keep `.nojekyll` committed at the published site root.
+## 常用命令
 
-## Commands
-
-- `npm run dev` starts the local dev server.
-- `npm run build` creates the static export in `out/`.
-- `npm run lint` runs ESLint.
+- `npm run dev`：启动本地开发环境
+- `npm run build`：构建静态导出
+- `npm run lint`：运行 ESLint

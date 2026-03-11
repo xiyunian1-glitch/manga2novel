@@ -1,6 +1,9 @@
 import type { CreativePreset } from './types';
 
 export const CUSTOM_PRESET_ID = 'custom';
+export const SPECIAL_PROMPT_HEADING = '## 特殊提示词';
+const LEGACY_SUPPLEMENTAL_PROMPT_HEADING = '## 补充提示';
+export const ROLE_AND_STYLE_HEADING = '## 创作风格';
 
 const OUTPUT_SCHEMA = `## 输出格式（严格JSON）
 你必须以如下 JSON 格式回复，不要添加任何 Markdown 代码块标记：
@@ -10,10 +13,7 @@ const OUTPUT_SCHEMA = `## 输出格式（严格JSON）
   "endingDetail": "本组最后的场景细节和角色状态（用于衔接下一组，100字以内）"
 }`;
 
-function buildSystemPrompt(roleAndStyle: string): string {
-  return `${roleAndStyle}
-
-## 你的任务
+const LEGACY_SYSTEM_PROMPT_BODY = `## 你的任务
 分析提供的漫画图片，将其转化为流畅、生动、结构清晰的小说段落。
 
 ## 输出规则
@@ -25,6 +25,88 @@ function buildSystemPrompt(roleAndStyle: string): string {
 6. 不要解释你在做什么，也不要输出额外注释
 
 ${OUTPUT_SCHEMA}`;
+
+export const SYSTEM_PROMPT_BODY = `## 输出规则
+1. 叙事必须承接前文，确保人物动机、关系与事件线一致
+2. 将动作、表情、场景、镜头语言转写成文学描写，而不是简单罗列画面
+3. 对话统一使用「」包裹，并保留角色个性与语气差异
+4. 保留节奏感，关键场面适度放大，过场不要冗长
+5. 注意环境、光线、气味、声音、触感等细节，增强临场感
+6. 不要解释你在做什么，也不要输出额外注释
+
+${OUTPUT_SCHEMA}`;
+
+export function composeSystemPrompt(
+  supplementalPrompt: string,
+  roleAndStyle: string,
+  systemPromptBody = SYSTEM_PROMPT_BODY
+): string {
+  const trimmedSupplementalPrompt = supplementalPrompt.trim();
+  const trimmedRoleAndStyle = roleAndStyle.trim();
+  const trimmedSystemPromptBody = systemPromptBody.trim();
+  const sections: string[] = [];
+
+  if (trimmedSupplementalPrompt) {
+    sections.push(`${SPECIAL_PROMPT_HEADING}\n${trimmedSupplementalPrompt}`);
+  }
+
+  if (trimmedRoleAndStyle) {
+    sections.push(`${ROLE_AND_STYLE_HEADING}\n${trimmedRoleAndStyle}`);
+  }
+
+  if (trimmedSystemPromptBody) {
+    sections.push(trimmedSystemPromptBody);
+  }
+
+  return sections.join('\n\n').trim();
+}
+
+export function splitSystemPrompt(systemPrompt: string): {
+  supplementalPrompt: string;
+  roleAndStyle: string;
+  systemPromptBody: string;
+} {
+  const normalizedPrompt = systemPrompt.trim();
+  const systemMarkers = ['## 你的任务', '## 输出规则'];
+  const markerIndexes = systemMarkers
+    .map((marker) => normalizedPrompt.indexOf(marker))
+    .filter((index) => index !== -1);
+  const systemStartIndex = markerIndexes.length > 0 ? Math.min(...markerIndexes) : -1;
+  const promptPrefix = systemStartIndex === -1
+    ? normalizedPrompt
+    : normalizedPrompt.slice(0, systemStartIndex).trim();
+  const rawSystemPromptBody = systemStartIndex === -1
+    ? SYSTEM_PROMPT_BODY
+    : normalizedPrompt.slice(systemStartIndex).trim();
+  const systemPromptBody = rawSystemPromptBody === LEGACY_SYSTEM_PROMPT_BODY
+    ? SYSTEM_PROMPT_BODY
+    : rawSystemPromptBody;
+
+  const supplementalPattern = `${SPECIAL_PROMPT_HEADING}|${LEGACY_SUPPLEMENTAL_PROMPT_HEADING}`;
+  const supplementalMatch = promptPrefix.match(
+    new RegExp(`(?:${supplementalPattern})\\s*([\\s\\S]*?)(?=\\n${ROLE_AND_STYLE_HEADING}|$)`)
+  );
+  const roleAndStyleMatch = promptPrefix.match(
+    new RegExp(`${ROLE_AND_STYLE_HEADING}\\s*([\\s\\S]*?)$`)
+  );
+
+  if (supplementalMatch || roleAndStyleMatch) {
+    return {
+      supplementalPrompt: supplementalMatch?.[1]?.trim() || '',
+      roleAndStyle: roleAndStyleMatch?.[1]?.trim() || '',
+      systemPromptBody,
+    };
+  }
+
+  return {
+    supplementalPrompt: '',
+    roleAndStyle: promptPrefix,
+    systemPromptBody,
+  };
+}
+
+function buildSystemPrompt(roleAndStyle: string): string {
+  return composeSystemPrompt('', roleAndStyle, SYSTEM_PROMPT_BODY);
 }
 
 const DEFAULT_MANGA_NOVELIST_PROMPT = buildSystemPrompt('你是一位专业的漫改小说家，擅长把分镜、情绪推进和人物关系转写成连贯、耐读的中文小说。整体风格成熟、克制、画面感强。');
@@ -74,8 +156,9 @@ export function getCreativePreset(presetId: string): CreativePreset | undefined 
 }
 
 export function resolveCreativePresetId(systemPrompt: string): string {
+  const { roleAndStyle } = splitSystemPrompt(systemPrompt);
   const matchedPreset = CREATIVE_PRESETS.find(
-    (preset) => preset.id !== CUSTOM_PRESET_ID && preset.prompt === systemPrompt
+    (preset) => preset.id !== CUSTOM_PRESET_ID && splitSystemPrompt(preset.prompt).roleAndStyle === roleAndStyle
   );
   return matchedPreset?.id || CUSTOM_PRESET_ID;
 }

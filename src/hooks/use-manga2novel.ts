@@ -9,12 +9,35 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import type { APIConfig, ImageItem, TaskState, OrchestratorConfig, CreativeSettings } from '@/lib/types';
 import { DEFAULT_CREATIVE_SETTINGS, DEFAULT_ORCHESTRATOR_CONFIG, DEFAULT_MEMORY_STATE } from '@/lib/types';
 import { TaskOrchestrator } from '@/lib/task-orchestrator';
-import { secureSet, secureGet, setJSON, getJSON } from '@/lib/crypto-store';
+import { secureSet, secureGet, secureRemove, setJSON, getJSON } from '@/lib/crypto-store';
 import { createPreviewUrl, revokePreviewUrl } from '@/lib/image-pipeline';
 import { fetchModels as fetchProviderModels } from '@/lib/api-adapter';
-import { CREATIVE_PRESETS, CUSTOM_PRESET_ID, getCreativePreset, resolveCreativePresetId, SYSTEM_PROMPT } from '@/lib/prompts';
+import {
+  CREATIVE_PRESETS,
+  CUSTOM_PRESET_ID,
+  composeSystemPrompt,
+  resolveCreativePresetId,
+  splitSystemPrompt,
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_BODY,
+} from '@/lib/prompts';
+import type { CreativePreset } from '@/lib/types';
 
 let idCounter = 0;
+const CREATIVE_SETTINGS_TEMPLATE_VERSION = 3;
+
+function resolvePresetIdFromPresets(systemPrompt: string, presets: CreativePreset[]): string {
+  const builtinPresetId = resolveCreativePresetId(systemPrompt);
+  if (builtinPresetId !== CUSTOM_PRESET_ID) {
+    return builtinPresetId;
+  }
+
+  const { roleAndStyle } = splitSystemPrompt(systemPrompt);
+  const matchedPreset = presets.find(
+    (preset) => preset.id !== CUSTOM_PRESET_ID && splitSystemPrompt(preset.prompt).roleAndStyle === roleAndStyle
+  );
+  return matchedPreset?.id || CUSTOM_PRESET_ID;
+}
 
 export function useManga2Novel() {
   const orchestratorRef = useRef<TaskOrchestrator | null>(null);
@@ -22,9 +45,10 @@ export function useManga2Novel() {
   const [apiConfig, setApiConfigState] = useState<APIConfig>({
     provider: 'openrouter',
     apiKey: '',
-    model: 'anthropic/claude-sonnet-4',
+    model: '',
   });
   const [images, setImages] = useState<ImageItem[]>([]);
+  const [creativePresets, setCreativePresets] = useState<CreativePreset[]>(CREATIVE_PRESETS);
   const [taskState, setTaskState] = useState<TaskState>({
     status: 'idle',
     chunks: [],
@@ -33,6 +57,7 @@ export function useManga2Novel() {
     creativeSettings: { ...DEFAULT_CREATIVE_SETTINGS, systemPrompt: SYSTEM_PROMPT },
     currentChunkIndex: -1,
     fullNovel: '',
+    lastAIRequest: undefined,
   });
   const [configLoaded, setConfigLoaded] = useState(false);
 
@@ -46,19 +71,25 @@ export function useManga2Novel() {
   useEffect(() => {
     (async () => {
       const savedKey = await secureGet('apiKey');
-      const savedProvider = getJSON<string>('provider');
       const savedModel = getJSON<string>('model');
       const savedBaseUrl = getJSON<string>('baseUrl');
       const savedOrcConfig = getJSON<OrchestratorConfig>('orchestratorConfig');
       const savedCreativeSettings = getJSON<CreativeSettings>('creativeSettings');
+      const savedCreativeSettingsTemplateVersion = getJSON<number>('creativeSettingsTemplateVersion');
+      const savedCreativePresets = getJSON<CreativePreset[]>('creativePresets');
+      const nextPresets = [
+        ...CREATIVE_PRESETS,
+        ...(savedCreativePresets?.filter((preset) => !CREATIVE_PRESETS.some((builtin) => builtin.id === preset.id)) || []),
+      ];
 
       const config: APIConfig = {
-        provider: (savedProvider as APIConfig['provider']) || 'openrouter',
+        provider: 'openrouter',
         apiKey: savedKey || '',
-        model: savedModel || 'anthropic/claude-sonnet-4',
+        model: savedModel || '',
         baseUrl: savedBaseUrl || '',
       };
       setApiConfigState(config);
+      setCreativePresets(nextPresets);
       if (savedOrcConfig) {
         orchestrator.updateConfig(savedOrcConfig);
       }
@@ -67,7 +98,15 @@ export function useManga2Novel() {
         systemPrompt: SYSTEM_PROMPT,
         ...savedCreativeSettings,
       };
-      creativeSettings.presetId = resolveCreativePresetId(creativeSettings.systemPrompt);
+
+      if (savedCreativeSettingsTemplateVersion !== CREATIVE_SETTINGS_TEMPLATE_VERSION) {
+        const { supplementalPrompt, roleAndStyle } = splitSystemPrompt(creativeSettings.systemPrompt);
+        creativeSettings.systemPrompt = composeSystemPrompt(supplementalPrompt, roleAndStyle, SYSTEM_PROMPT_BODY);
+        setJSON('creativeSettingsTemplateVersion', CREATIVE_SETTINGS_TEMPLATE_VERSION);
+        setJSON('creativeSettings', creativeSettings);
+      }
+
+      creativeSettings.presetId = resolvePresetIdFromPresets(creativeSettings.systemPrompt, nextPresets);
       orchestrator.updateCreativeSettings(creativeSettings);
       setTaskState((prev) => ({
         ...prev,
@@ -87,12 +126,23 @@ export function useManga2Novel() {
 
   // 保存 API 配置
   const saveApiConfig = useCallback(async (config: APIConfig) => {
-    setApiConfigState(config);
-    await secureSet('apiKey', config.apiKey);
-    setJSON('provider', config.provider);
-    setJSON('model', config.model);
-    setJSON('baseUrl', config.baseUrl || '');
-    orchestrator.setAPIConfig(config);
+    const normalizedConfig: APIConfig = {
+      ...config,
+      provider: 'openrouter',
+      apiKey: config.apiKey.trim(),
+      model: config.model.trim(),
+      baseUrl: config.baseUrl?.trim() || '',
+    };
+    setApiConfigState(normalizedConfig);
+    if (normalizedConfig.apiKey) {
+      await secureSet('apiKey', normalizedConfig.apiKey);
+    } else {
+      secureRemove('apiKey');
+    }
+    setJSON('provider', normalizedConfig.provider);
+    setJSON('model', normalizedConfig.model);
+    setJSON('baseUrl', normalizedConfig.baseUrl || '');
+    orchestrator.setAPIConfig(normalizedConfig);
   }, [orchestrator]);
 
   // 保存编排配置
@@ -112,13 +162,15 @@ export function useManga2Novel() {
     const nextSettings: Partial<CreativeSettings> = { ...settings };
 
     if (typeof settings.systemPrompt === 'string' && settings.presetId === undefined) {
-      nextSettings.presetId = resolveCreativePresetId(settings.systemPrompt);
+      nextSettings.presetId = resolvePresetIdFromPresets(settings.systemPrompt, creativePresets);
     }
 
     if (settings.presetId && settings.presetId !== CUSTOM_PRESET_ID) {
-      const preset = getCreativePreset(settings.presetId);
+      const preset = creativePresets.find((item) => item.id === settings.presetId);
       if (preset) {
-        nextSettings.systemPrompt = preset.prompt;
+        const { roleAndStyle } = splitSystemPrompt(preset.prompt);
+        const { supplementalPrompt, systemPromptBody } = splitSystemPrompt(currentSettings.systemPrompt);
+        nextSettings.systemPrompt = composeSystemPrompt(supplementalPrompt, roleAndStyle, systemPromptBody);
       }
     }
 
@@ -133,16 +185,70 @@ export function useManga2Novel() {
     const currentState = orchestrator.getState();
     setJSON('creativeSettings', currentState.creativeSettings);
     setTaskState(currentState);
-  }, [orchestrator]);
+  }, [creativePresets, orchestrator]);
 
   const applyCreativePreset = useCallback((presetId: string) => {
     if (presetId === CUSTOM_PRESET_ID) {
       updateCreativeSettings({ presetId: CUSTOM_PRESET_ID });
       return;
     }
-    const preset = getCreativePreset(presetId) || CREATIVE_PRESETS[1];
-    updateCreativeSettings({ presetId: preset.id, systemPrompt: preset.prompt });
-  }, [updateCreativeSettings]);
+    const preset = creativePresets.find((item) => item.id === presetId) || CREATIVE_PRESETS[1];
+    const { roleAndStyle } = splitSystemPrompt(preset.prompt);
+    const { supplementalPrompt, systemPromptBody } = splitSystemPrompt(orchestrator.getState().creativeSettings.systemPrompt);
+    updateCreativeSettings({
+      presetId: preset.id,
+      systemPrompt: composeSystemPrompt(supplementalPrompt, roleAndStyle, systemPromptBody),
+    });
+  }, [creativePresets, orchestrator, updateCreativeSettings]);
+
+  const saveCreativePreset = useCallback((name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      throw new Error('请输入预设名称');
+    }
+
+    const { roleAndStyle } = splitSystemPrompt(orchestrator.getState().creativeSettings.systemPrompt);
+    if (!roleAndStyle.trim()) {
+      throw new Error('当前风格内容为空，无法保存为预设');
+    }
+
+    const existingCustomPresets = creativePresets.filter((preset) => !CREATIVE_PRESETS.some((builtin) => builtin.id === preset.id));
+    const existingPreset = existingCustomPresets.find((preset) => preset.name === trimmedName);
+    const nextPreset: CreativePreset = existingPreset
+      ? { ...existingPreset, prompt: roleAndStyle }
+      : {
+          id: `user-${Date.now()}`,
+          name: trimmedName,
+          prompt: roleAndStyle,
+        };
+
+    const nextCustomPresets = existingPreset
+      ? existingCustomPresets.map((preset) => (preset.id === existingPreset.id ? nextPreset : preset))
+      : [...existingCustomPresets, nextPreset];
+    const nextPresets = [...CREATIVE_PRESETS, ...nextCustomPresets];
+
+    setCreativePresets(nextPresets);
+    setJSON('creativePresets', nextCustomPresets);
+    updateCreativeSettings({ presetId: nextPreset.id });
+  }, [creativePresets, orchestrator, updateCreativeSettings]);
+
+  const deleteCreativePreset = useCallback((presetId: string) => {
+    const isBuiltinPreset = CREATIVE_PRESETS.some((preset) => preset.id === presetId);
+    if (presetId === CUSTOM_PRESET_ID || isBuiltinPreset) {
+      return;
+    }
+
+    const nextCustomPresets = creativePresets.filter(
+      (preset) => !CREATIVE_PRESETS.some((builtin) => builtin.id === preset.id) && preset.id !== presetId
+    );
+    const nextPresets = [...CREATIVE_PRESETS, ...nextCustomPresets];
+    setCreativePresets(nextPresets);
+    setJSON('creativePresets', nextCustomPresets);
+
+    if (orchestrator.getState().creativeSettings.presetId === presetId) {
+      updateCreativeSettings({ presetId: CUSTOM_PRESET_ID });
+    }
+  }, [creativePresets, orchestrator, updateCreativeSettings]);
 
   // 添加图片
   const addImages = useCallback((files: File[]) => {
@@ -184,6 +290,7 @@ export function useManga2Novel() {
   // 开始处理
   const startProcessing = useCallback(async () => {
     if (!apiConfig.apiKey) throw new Error('请先配置 API Key');
+    if (!apiConfig.model.trim()) throw new Error('请先输入或选择模型');
     orchestrator.setAPIConfig(apiConfig);
     await orchestrator.prepare(images);
     setImages([...images]); // 触发重渲染以显示处理后的状态
@@ -232,10 +339,13 @@ export function useManga2Novel() {
 
   return {
     apiConfig,
+    creativePresets,
     images,
     taskState,
     configLoaded,
     saveApiConfig,
+    saveCreativePreset,
+    deleteCreativePreset,
     saveOrchestratorConfig,
     fetchModels,
     updateCreativeSettings,

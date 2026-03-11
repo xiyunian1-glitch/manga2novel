@@ -102,6 +102,19 @@ export interface AIResponse {
   endingDetail: string;
 }
 
+/** 最近一次发给 AI 的请求快照 */
+export interface LastAIRequest {
+  provider: APIProvider;
+  model: string;
+  baseUrl?: string;
+  chunkIndex: number;
+  imageCount: number;
+  imageNames: string[];
+  systemPrompt: string;
+  userPrompt: string;
+  sentAt: string;
+}
+
 /** 整体任务状态 */
 export interface TaskState {
   status: 'idle' | 'preparing' | 'running' | 'paused' | 'completed' | 'error';
@@ -113,11 +126,13 @@ export interface TaskState {
   currentChunkIndex: number;
   /** 最终输出的完整小说 */
   fullNovel: string;
+  /** 最近一次实际发给 AI 的请求 */
+  lastAIRequest?: LastAIRequest;
 }
 
 /** 默认配置 */
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  chunkSize: 4,
+  chunkSize: 10,
   maxConcurrency: 1,
   maxRetries: 3,
   retryDelay: 2000,

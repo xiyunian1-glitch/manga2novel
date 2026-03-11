@@ -7,20 +7,15 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 import { Check, ChevronsUpDown, Eye, EyeOff, KeyRound, RefreshCw, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import type { APIConfig, APIProvider, ModelOption } from '@/lib/types';
-import { GEMINI_MODELS, OPENROUTER_MODELS } from '@/lib/types';
+import { OPENROUTER_MODELS } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
-function getVendorLabel(provider: APIProvider, model: ModelOption): string {
-  if (provider === 'gemini') {
-    return 'Google';
-  }
-
+function getVendorLabel(model: ModelOption): string {
   const idVendor = model.id.includes('/') ? model.id.split('/')[0] : '';
   const normalizedIdVendor = idVendor.trim();
   if (normalizedIdVendor) {
@@ -39,66 +34,61 @@ interface APIConfigPanelProps {
 }
 
 export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIConfigPanelProps) {
-  const [provider, setProvider] = useState<APIProvider>(config.provider);
+  const provider: APIProvider = 'openrouter';
   const [apiKey, setApiKey] = useState(config.apiKey);
-  const [model, setModel] = useState(config.model);
+  const [model, setModel] = useState(config.model || '');
   const [baseUrl, setBaseUrl] = useState(config.baseUrl || '');
-  const [models, setModels] = useState<ModelOption[]>(config.provider === 'openrouter' ? OPENROUTER_MODELS : GEMINI_MODELS);
+  const [models, setModels] = useState<ModelOption[]>(OPENROUTER_MODELS);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
-  const requiresApiKeyForModels = provider === 'openrouter' || provider === 'gemini';
-  const canFetchModels = !disabled && !fetchingModels && (!requiresApiKeyForModels || Boolean(apiKey.trim()));
+  const canFetchModels = !disabled && !fetchingModels && Boolean(apiKey.trim());
+  const hasConfigChanges = (
+    apiKey.trim() !== config.apiKey
+    || model.trim() !== config.model
+    || baseUrl.trim() !== (config.baseUrl || '')
+  );
 
   useEffect(() => {
-    setProvider(config.provider);
     setApiKey(config.apiKey);
-    setModel(config.model);
+    setModel(config.model || '');
     setBaseUrl(config.baseUrl || '');
-    setModels(config.provider === 'openrouter' ? OPENROUTER_MODELS : GEMINI_MODELS);
   }, [config]);
 
   const groupedModels = useMemo(() => {
     const groups = new Map<string, ModelOption[]>();
     models.forEach((item) => {
-      const vendor = getVendorLabel(provider, item);
+      const vendor = getVendorLabel(item);
       const current = groups.get(vendor) || [];
       current.push(item);
       groups.set(vendor, current);
     });
 
     return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right, 'zh-CN'));
-  }, [models, provider]);
+  }, [models]);
 
   const selectedModel = useMemo(() => {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) return undefined;
     for (const [, vendorModels] of groupedModels) {
-      const found = vendorModels.find((item) => item.id === model);
+      const found = vendorModels.find((item) => item.id === normalizedModel);
       if (found) {
         return found;
       }
     }
-    return models.find((item) => item.id === model);
+    return models.find((item) => item.id === normalizedModel);
   }, [groupedModels, model, models]);
-
-  const handleProviderChange = (nextProvider: APIProvider) => {
-    setProvider(nextProvider);
-    const nextModels = nextProvider === 'openrouter' ? OPENROUTER_MODELS : GEMINI_MODELS;
-    setModels(nextModels);
-    setModel(nextModels[0]?.id ?? '');
-  };
 
   const handleSave = async () => {
     setSaving(true);
-    await onSave({ provider, apiKey, model, baseUrl: baseUrl.trim() });
+    await onSave({ provider, apiKey: apiKey.trim(), model: model.trim(), baseUrl: baseUrl.trim() });
     setSaving(false);
   };
 
   const handleFetchModels = async () => {
     if (!apiKey.trim()) {
-      toast.error(provider === 'openrouter'
-        ? '请先填写 OpenRouter API Key，再获取模型列表'
-        : '请先填写 Gemini API Key，再获取模型列表');
+      toast.error('请先填写 OpenRouter API Key，再获取模型列表');
       return;
     }
 
@@ -110,9 +100,6 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
         return;
       }
       setModels(nextModels);
-      if (!nextModels.some((item) => item.id === model)) {
-        setModel(nextModels[0].id);
-      }
       toast.success(`已获取 ${nextModels.length} 个模型`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '获取模型失败');
@@ -134,22 +121,17 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="grid grid-cols-1 gap-5 2xl:grid-cols-2">
-          <div className="space-y-2.5">
-            <Label>API 提供商</Label>
-            <Select value={provider} onValueChange={(value) => value && handleProviderChange(value as APIProvider)} disabled={disabled}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="z-[9999]" sideOffset={10}>
-                <SelectItem value="openrouter">OpenRouter（推荐）</SelectItem>
-                <SelectItem value="gemini">Google Gemini</SelectItem>
-              </SelectContent>
-            </Select>
+        <div className="space-y-2.5">
+          <Label>API 提供商</Label>
+          <div className="flex h-10 items-center rounded-lg border border-input bg-muted/30 px-3 text-sm">
+            OpenRouter
           </div>
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <Label>模型</Label>
+        </div>
+
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>模型</Label>
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
@@ -161,59 +143,69 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
                 <RefreshCw className={`h-3.5 w-3.5 mr-1 ${fetchingModels ? 'animate-spin' : ''}`} />
                 获取模型
               </Button>
+              <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={modelPickerOpen}
+                      className="h-7 px-2 font-normal"
+                      disabled={disabled}
+                    >
+                      <span className="truncate text-left">
+                        {selectedModel?.name || '从列表选择'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  }
+                />
+                <PopoverContent className="z-[9999] w-[min(32rem,calc(100vw-2rem))] p-0" sideOffset={12} align="end">
+                  <Command shouldFilter>
+                    <CommandInput placeholder="搜索模型或厂商" />
+                    <CommandList className="max-h-96">
+                      <CommandEmpty>没有匹配的模型</CommandEmpty>
+                      {groupedModels.map(([vendor, vendorModels], groupIndex) => (
+                        <div key={vendor}>
+                          {groupIndex > 0 ? <CommandSeparator /> : null}
+                          <CommandGroup heading={vendor}>
+                            {vendorModels.map((item) => (
+                              <CommandItem
+                                key={item.id}
+                                value={`${vendor} ${item.name} ${item.id}`}
+                                onSelect={() => {
+                                  setModel(item.id);
+                                  setModelPickerOpen(false);
+                                }}
+                                className="gap-3"
+                              >
+                                <Check className={cn('h-4 w-4', model.trim() === item.id ? 'opacity-100' : 'opacity-0')} />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate" title={item.name}>{item.name}</div>
+                                  <div className="truncate text-xs text-muted-foreground" title={item.id}>{item.id}</div>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </div>
+                      ))}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
-            <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
-              <PopoverTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={modelPickerOpen}
-                    className="w-full justify-between font-normal"
-                    disabled={disabled}
-                  >
-                    <span className="truncate text-left">
-                      {selectedModel?.name || '选择模型'}
-                    </span>
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                }
-              />
-              <PopoverContent className="z-[9999] w-[min(32rem,calc(100vw-2rem))] p-0" sideOffset={12} align="start">
-                <Command shouldFilter>
-                  <CommandInput placeholder="搜索模型或厂商" />
-                  <CommandList className="max-h-96">
-                    <CommandEmpty>没有匹配的模型</CommandEmpty>
-                    {groupedModels.map(([vendor, vendorModels], groupIndex) => (
-                      <div key={vendor}>
-                        {groupIndex > 0 ? <CommandSeparator /> : null}
-                        <CommandGroup heading={vendor}>
-                          {vendorModels.map((item) => (
-                            <CommandItem
-                              key={item.id}
-                              value={`${vendor} ${item.name} ${item.id}`}
-                              onSelect={() => {
-                                setModel(item.id);
-                                setModelPickerOpen(false);
-                              }}
-                              className="gap-3"
-                            >
-                              <Check className={cn('h-4 w-4', model === item.id ? 'opacity-100' : 'opacity-0')} />
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate" title={item.name}>{item.name}</div>
-                                <div className="truncate text-xs text-muted-foreground" title={item.id}>{item.id}</div>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </div>
-                    ))}
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
           </div>
+          <Input
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            placeholder="输入模型 ID，例如 anthropic/claude-sonnet-4"
+            disabled={disabled}
+          />
+          <p className="text-xs text-muted-foreground">
+            可以直接手动输入模型 ID，也可以先获取模型列表再从列表中选择。
+            {selectedModel ? ` 当前匹配：${selectedModel.name}` : ''}
+          </p>
         </div>
 
         <div className="space-y-2.5">
@@ -221,7 +213,7 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
           <Input
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder={provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://generativelanguage.googleapis.com/v1beta'}
+            placeholder="https://openrouter.ai/api/v1"
             disabled={disabled}
           />
           <p className="text-xs text-muted-foreground">
@@ -237,7 +229,7 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
                 type={showKey ? 'text' : 'password'}
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
-                placeholder={provider === 'openrouter' ? 'sk-or-...' : 'AIza...'}
+                placeholder="sk-or-..."
                 disabled={disabled}
               />
               <button
@@ -248,7 +240,7 @@ export function APIConfigPanel({ config, onSave, onFetchModels, disabled }: APIC
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
-            <Button className="sm:w-auto" onClick={handleSave} disabled={disabled || saving || !apiKey}>
+            <Button className="sm:w-auto" onClick={handleSave} disabled={disabled || saving || !hasConfigChanges}>
               {saving ? '保存中...' : '保存'}
             </Button>
           </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useManga2Novel } from '@/hooks/use-manga2novel';
 import { APIConfigPanel } from '@/components/api-config-panel';
 import { CreativeSettingsPanel } from '@/components/creative-settings-panel';
@@ -8,20 +9,25 @@ import { OrchestratorConfigPanel } from '@/components/orchestrator-config-panel'
 import { ProgressPanel } from '@/components/progress-panel';
 import { NovelPreview } from '@/components/novel-preview';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster, toast } from 'sonner';
-import { CREATIVE_PRESETS } from '@/lib/prompts';
 import {
-  Play, Pause, SkipForward, RotateCcw, RefreshCw, BookOpenText,
+  Play, Pause, SkipForward, RotateCcw, RefreshCw, BookOpenText, Send,
 } from 'lucide-react';
 
 export default function Manga2NovelApp() {
+  const [lastRequestOpen, setLastRequestOpen] = useState(false);
   const {
     apiConfig,
+    creativePresets,
     images,
     taskState,
     configLoaded,
     saveApiConfig,
+    saveCreativePreset,
+    deleteCreativePreset,
     saveOrchestratorConfig,
     fetchModels,
     updateCreativeSettings,
@@ -42,7 +48,8 @@ export default function Manga2NovelApp() {
   const isRunning = taskState.status === 'running' || taskState.status === 'preparing';
   const isPaused = taskState.status === 'paused';
   const isCompleted = taskState.status === 'completed';
-  const canStart = images.length > 0 && apiConfig.apiKey && !isRunning;
+  const canStart = images.length > 0 && apiConfig.apiKey && apiConfig.model.trim() && !isRunning;
+  const lastAIRequest = taskState.lastAIRequest;
 
   const handleStart = async () => {
     try {
@@ -97,6 +104,42 @@ export default function Manga2NovelApp() {
             <span className="text-xs text-muted-foreground hidden sm:inline">漫画转小说 · 纯前端 AI 工具</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Dialog open={lastRequestOpen} onOpenChange={setLastRequestOpen}>
+              <DialogTrigger
+                render={
+                  <Button type="button" variant="outline" disabled={!lastAIRequest}>
+                    <Send className="h-4 w-4 mr-1" />
+                    查看上次发送
+                  </Button>
+                }
+              />
+              <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                  <DialogTitle>上一次发给 AI 的内容</DialogTitle>
+                </DialogHeader>
+                <div className="grid gap-3 text-sm sm:grid-cols-2">
+                  <div><span className="font-medium">模型：</span>{lastAIRequest?.model || '暂无'}</div>
+                  <div><span className="font-medium">提供商：</span>{lastAIRequest?.provider || '暂无'}</div>
+                  <div><span className="font-medium">分块：</span>{lastAIRequest ? `第 ${lastAIRequest.chunkIndex + 1} 块` : '暂无'}</div>
+                  <div><span className="font-medium">图片数：</span>{lastAIRequest ? `${lastAIRequest.imageCount} 张` : '暂无'}</div>
+                  <div className="sm:col-span-2"><span className="font-medium">图片：</span>{lastAIRequest?.imageNames.join('，') || '暂无'}</div>
+                  <div className="sm:col-span-2"><span className="font-medium">接口地址：</span>{lastAIRequest?.baseUrl || '默认地址'}</div>
+                </div>
+                <ScrollArea className="h-[420px] rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="space-y-4 pr-4">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">System Prompt</div>
+                      <pre className="whitespace-pre-wrap break-words text-xs leading-6">{lastAIRequest?.systemPrompt || '暂无'}</pre>
+                    </div>
+                    <Separator />
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">User Prompt</div>
+                      <pre className="whitespace-pre-wrap break-words text-xs leading-6">{lastAIRequest?.userPrompt || '暂无'}</pre>
+                    </div>
+                  </div>
+                </ScrollArea>
+              </DialogContent>
+            </Dialog>
             {/* 控制按钮组 */}
             {!isRunning && !isPaused && !isCompleted && (
               <Button onClick={handleStart} disabled={!canStart}>
@@ -150,9 +193,11 @@ export default function Manga2NovelApp() {
 
             <CreativeSettingsPanel
               settings={taskState.creativeSettings}
-              presets={CREATIVE_PRESETS}
+              presets={creativePresets}
               onUpdate={updateCreativeSettings}
               onApplyPreset={applyCreativePreset}
+              onSavePreset={saveCreativePreset}
+              onDeletePreset={deleteCreativePreset}
               disabled={isRunning}
             />
 

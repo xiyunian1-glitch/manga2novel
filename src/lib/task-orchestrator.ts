@@ -24,10 +24,12 @@ import type {
   APIConfig,
   AIResponse,
   CreativeSettings,
+  LastAIRequest,
 } from './types';
 import { DEFAULT_CREATIVE_SETTINGS, DEFAULT_MEMORY_STATE, DEFAULT_ORCHESTRATOR_CONFIG } from './types';
 import { processImage } from './image-pipeline';
 import { callAI } from './api-adapter';
+import { buildUserPrompt } from './prompts';
 
 export type TaskEventType =
   | 'state-change'     // 整体状态变化
@@ -64,6 +66,7 @@ export class TaskOrchestrator {
       creativeSettings: { ...DEFAULT_CREATIVE_SETTINGS },
       currentChunkIndex: -1,
       fullNovel: '',
+      lastAIRequest: undefined,
     };
   }
 
@@ -231,6 +234,7 @@ export class TaskOrchestrator {
     memory: MemoryState,
     config: OrchestratorConfig
   ): Promise<boolean> {
+    const userPrompt = buildUserPrompt(chunk.index, memory.globalSummary, memory.previousEnding);
     const images = chunk.images
       .filter((img) => img.processedBase64 && img.processedMime)
       .map((img) => ({
@@ -240,6 +244,20 @@ export class TaskOrchestrator {
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       try {
+        const lastAIRequest: LastAIRequest = {
+          provider: this.apiConfig!.provider,
+          model: this.apiConfig!.model,
+          baseUrl: this.apiConfig!.baseUrl,
+          chunkIndex: chunk.index,
+          imageCount: chunk.images.length,
+          imageNames: chunk.images.map((img) => img.file.webkitRelativePath || img.file.name),
+          systemPrompt: this.state.creativeSettings.systemPrompt,
+          userPrompt,
+          sentAt: new Date().toISOString(),
+        };
+        this.state.lastAIRequest = lastAIRequest;
+        this.emit('state-change');
+
         const result: AIResponse = await callAI(
           this.apiConfig!,
           images,
@@ -320,6 +338,7 @@ export class TaskOrchestrator {
       creativeSettings: this.state.creativeSettings,
       currentChunkIndex: -1,
       fullNovel: '',
+      lastAIRequest: this.state.lastAIRequest,
     };
     this.emit('state-change');
   }
