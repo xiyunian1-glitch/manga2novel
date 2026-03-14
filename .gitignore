@@ -29,12 +29,18 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.codex-*.log
 
 # env files (can opt-in for committing if needed)
 .env*
 
 # vercel
 .vercel
+
+# local preview / codex artifacts
+.codex-input/
+preview-root/
+public/codex-input/
 
 # typescript
 *.tsbuildinfo

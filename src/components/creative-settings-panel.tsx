@@ -1,13 +1,13 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Slider } from '@/components/ui/slider';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ChevronDown, ChevronUp, WandSparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { Textarea } from '@/components/ui/textarea';
 import type { CreativePreset, CreativeSettings } from '@/lib/types';
 import { composeSystemPrompt, splitSystemPrompt } from '@/lib/prompts';
 
@@ -33,6 +33,7 @@ export function CreativeSettingsPanel({
   const [showSupplementalPrompt, setShowSupplementalPrompt] = useState(false);
   const [showRoleAndStyle, setShowRoleAndStyle] = useState(false);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+
   const { supplementalPrompt, roleAndStyle, systemPromptBody } = useMemo(
     () => splitSystemPrompt(settings.systemPrompt),
     [settings.systemPrompt]
@@ -52,7 +53,9 @@ export function CreativeSettingsPanel({
 
   const handleSavePreset = () => {
     const presetName = window.prompt('输入预设名称');
-    if (presetName === null) return;
+    if (presetName === null) {
+      return;
+    }
     onSavePreset(presetName);
   };
 
@@ -60,11 +63,14 @@ export function CreativeSettingsPanel({
   const canDeletePreset = settings.presetId.startsWith('user-') && !isBuiltInPreset;
 
   const handleDeletePreset = () => {
-    if (!canDeletePreset) return;
+    if (!canDeletePreset) {
+      return;
+    }
     const currentPreset = presets.find((preset) => preset.id === settings.presetId);
-    const presetName = currentPreset?.name || '当前预设';
-    const confirmed = window.confirm(`确认删除预设《${presetName}》吗？`);
-    if (!confirmed) return;
+    const confirmed = window.confirm(`确认删除预设「${currentPreset?.name || '当前预设'}」吗？`);
+    if (!confirmed) {
+      return;
+    }
     onDeletePreset(settings.presetId);
   };
 
@@ -127,7 +133,7 @@ export function CreativeSettingsPanel({
         <div className="space-y-2.5">
           <div className="flex items-center justify-between gap-3">
             <Label>Temperature</Label>
-            <span className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
+            <span className="rounded bg-muted px-2 py-0.5 text-sm font-mono">
               {settings.temperature.toFixed(2)}
             </span>
           </div>
@@ -155,25 +161,22 @@ export function CreativeSettingsPanel({
               onClick={() => setShowSupplementalPrompt((prev) => !prev)}
               disabled={disabled}
             >
-              {showSupplementalPrompt ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showSupplementalPrompt ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showSupplementalPrompt ? '收起' : '展开'}
             </Button>
           </div>
-
-          {!showSupplementalPrompt && (
-            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-              这里适合放额外创作强调、临时补充要求或本轮特别想强化的表达重点。它会排在整份提示词的最前面。
-            </div>
-          )}
-
-          {showSupplementalPrompt && (
+          {showSupplementalPrompt ? (
             <Textarea
               value={supplementalPrompt}
               onChange={(event) => handleSupplementalPromptChange(event.target.value)}
               disabled={disabled}
               className="min-h-24 resize-y leading-6"
-              placeholder="输入特殊提示词，例如额外创作要求、强调的表达重点或本轮特别想强化的约束..."
+              placeholder="输入额外创作要求或本轮强调点..."
             />
+          ) : (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里适合放额外创作强调、临时补充要求或本轮特别想强化的表达重点。
+            </div>
           )}
         </div>
 
@@ -188,25 +191,22 @@ export function CreativeSettingsPanel({
               onClick={() => setShowRoleAndStyle((prev) => !prev)}
               disabled={disabled}
             >
-              {showRoleAndStyle ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showRoleAndStyle ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showRoleAndStyle ? '收起' : '展开'}
             </Button>
           </div>
-
-          {!showRoleAndStyle && (
-            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-              这里适合放角色设定、文风走向、叙事口吻和情绪张力等经常会改的内容。
-            </div>
-          )}
-
-          {showRoleAndStyle && (
+          {showRoleAndStyle ? (
             <Textarea
               value={roleAndStyle}
               onChange={(event) => handleRoleAndStyleChange(event.target.value)}
               disabled={disabled}
               className="min-h-28 resize-y leading-6"
-              placeholder="输入角色设定、文风方向、叙事口吻和重点强调的风格..."
+              placeholder="输入角色设定、文风方向和叙事口吻..."
             />
+          ) : (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里适合放角色设定、文风走向、叙事口吻和情绪张力等经常会改的内容。
+            </div>
           )}
         </div>
 
@@ -221,27 +221,23 @@ export function CreativeSettingsPanel({
               onClick={() => setShowSystemPrompt((prev) => !prev)}
               disabled={disabled}
             >
-              {showSystemPrompt ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
+              {showSystemPrompt ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showSystemPrompt ? '收起' : '展开'}
             </Button>
           </div>
-
-          {!showSystemPrompt && (
-            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-              这里放任务说明、输出规则和 JSON 格式要求。默认收起，减少日常编辑干扰。
-            </div>
-          )}
-
-          {showSystemPrompt && (
+          {showSystemPrompt ? (
             <Textarea
               value={systemPromptBody}
               onChange={(event) => handleSystemPromptBodyChange(event.target.value)}
               disabled={disabled}
               className="min-h-72 resize-y leading-6"
-              placeholder="输入不常改动的任务说明、输出规则和格式要求..."
+              placeholder="输入任务说明、输出规则和格式要求..."
             />
+          ) : (
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              这里放任务说明、输出规则和 JSON 格式要求。User Prompt 模板已从前端隐藏。
+            </div>
           )}
-
           <p className="text-xs text-muted-foreground">
             修改后会实时参与每一轮分块请求。系统提示词更适合放结构化规则，而“风格”更适合放创作语气。
           </p>

@@ -44,6 +44,26 @@ export function OrchestratorConfigPanel({ config, onUpdate, disabled }: Orchestr
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
+            <Label className="text-sm">并发请求数 (Max Concurrency)</Label>
+            <span className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
+              {config.maxConcurrency}
+            </span>
+          </div>
+          <Slider
+            value={[config.maxConcurrency]}
+            onValueChange={(v) => onUpdate({ maxConcurrency: Array.isArray(v) ? v[0] : v })}
+            min={1}
+            max={8}
+            step={1}
+            disabled={disabled}
+          />
+          <p className="text-xs text-muted-foreground">
+            同时处理的图片预处理与逐页分析请求数。通常 2 到 4 会明显更快，过高可能触发模型限流。
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
             <Label className="text-sm">最大重试次数</Label>
             <span className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
               {config.maxRetries}

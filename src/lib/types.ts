@@ -1,112 +1,179 @@
-// ===== 核心类型定义 =====
-
-/** 支持的 API 提供商 */
 export type APIProvider = 'openrouter' | 'gemini';
+export type RequestStage = Exclude<PipelineStage, 'idle'>;
 
-/** API 配置 */
+export const REQUEST_STAGES: RequestStage[] = [
+  'analyze-pages',
+  'synthesize-chunks',
+  'synthesize-story',
+  'write-sections',
+];
+
+export const REQUEST_STAGE_LABELS: Record<RequestStage, string> = {
+  'analyze-pages': '逐页分析',
+  'synthesize-chunks': '分块综合',
+  'synthesize-story': '整书综合',
+  'write-sections': '章节写作',
+};
+
+export type StageModelConfig = Record<RequestStage, string>;
+
 export interface APIConfig {
   provider: APIProvider;
   apiKey: string;
   model: string;
-  /** 可选自定义 API URL / 透明代理地址 */
   baseUrl?: string;
+  stageModels: StageModelConfig;
 }
 
-/** 创作风格设置 */
 export interface CreativeSettings {
   presetId: string;
   systemPrompt: string;
+  userPromptTemplate: string;
   temperature: number;
 }
 
-/** 风格预设 */
 export interface CreativePreset {
   id: string;
   name: string;
   prompt: string;
 }
 
-/** 模型选项 */
 export interface ModelOption {
   id: string;
   name: string;
 }
 
-/** 单张图片的状态 */
 export interface ImageItem {
   id: string;
   file: File;
-  /** 原始图片预览 URL (object URL) */
   previewUrl: string;
-  /** 处理后的 base64 (WebP) */
   processedBase64?: string;
-  /** 处理后的 MIME type */
   processedMime?: string;
-  /** 处理状态 */
   status: 'pending' | 'processing' | 'ready' | 'error';
-  /** 原始文件大小 */
   originalSize: number;
-  /** 压缩后大小 */
   compressedSize?: number;
 }
 
-/** 分块的状态 */
 export type ChunkStatus = 'pending' | 'processing' | 'success' | 'error' | 'skipped';
 
-/** 单个分块 (一组图片) */
+export type PipelineStage =
+  | 'idle'
+  | 'analyze-pages'
+  | 'synthesize-chunks'
+  | 'synthesize-story'
+  | 'write-sections';
+
 export interface ImageChunk {
   index: number;
   images: ImageItem[];
   status: ChunkStatus;
-  /** 本块生成的小说文本 */
   novelText?: string;
-  /** 本块的剧情摘要 (用于传递给下一块) */
   plotSummary?: string;
-  /** 本块结尾细节 (用于传递给下一块) */
   endingDetail?: string;
-  /** 错误信息 */
   error?: string;
-  /** 重试次数 */
   retryCount: number;
 }
 
-/** 递归上下文状态 —— Memory Loop */
+export interface CharacterCue {
+  name: string;
+  role: string;
+  traits: string[];
+  relationshipHints: string[];
+  evidence: string[];
+}
+
+export interface DialogueLine {
+  speaker: string;
+  text: string;
+  speakerEvidence?: string;
+  speakerConfidence?: 'high' | 'medium' | 'low';
+}
+
+export interface PageAnalysis {
+  index: number;
+  pageNumber: number;
+  chunkIndex: number;
+  imageName: string;
+  status: ChunkStatus;
+  summary?: string;
+  location?: string;
+  timeHint?: string;
+  keyEvents: string[];
+  characters: CharacterCue[];
+  dialogue: DialogueLine[];
+  narrationText: string[];
+  visualText: string[];
+  error?: string;
+  retryCount: number;
+}
+
+export interface ChunkSynthesis {
+  index: number;
+  pageNumbers: number[];
+  status: ChunkStatus;
+  title?: string;
+  summary?: string;
+  keyDevelopments: string[];
+  continuitySummary?: string;
+  error?: string;
+  retryCount: number;
+}
+
+export interface ScenePlan {
+  sceneId: string;
+  title: string;
+  summary: string;
+  chunkIndexes: number[];
+}
+
+export interface StorySynthesis {
+  status: ChunkStatus;
+  storyOverview: string;
+  worldGuide: string;
+  characterGuide: string;
+  sceneOutline: ScenePlan[];
+  writingConstraints: string[];
+  error?: string;
+  retryCount: number;
+}
+
+export interface NovelSection {
+  index: number;
+  title: string;
+  chunkIndexes: number[];
+  status: ChunkStatus;
+  markdownBody?: string;
+  continuitySummary?: string;
+  error?: string;
+  retryCount: number;
+}
+
 export interface MemoryState {
-  /** 累积的全局剧情摘要 */
   globalSummary: string;
-  /** 上一组的结尾细节 */
   previousEnding: string;
-  /** 已处理的块索引 */
   completedChunks: number[];
 }
 
-/** 任务编排器的全局配置 */
 export interface OrchestratorConfig {
-  /** 每组图片数量，0 表示自动合并为单组 */
   chunkSize: number;
-  /** 最大并发数 (建议 1，因为需要顺序维护上下文) */
   maxConcurrency: number;
-  /** 最大重试次数 */
   maxRetries: number;
-  /** 重试延迟 (ms) */
   retryDelay: number;
+  autoSkipOnError: boolean;
 }
 
-/** AI 返回的结构化结果 */
 export interface AIResponse {
-  /** 本组的小说内容 */
   novelText: string;
-  /** 用于下一轮的剧情摘要 */
   plotSummary: string;
-  /** 结尾细节过渡 */
   endingDetail: string;
 }
 
-/** 最近一次发给 AI 的请求快照 */
 export interface LastAIRequest {
   provider: APIProvider;
   model: string;
   baseUrl?: string;
+  stage: PipelineStage;
+  itemLabel: string;
   chunkIndex: number;
   imageCount: number;
   imageNames: string[];
@@ -115,27 +182,35 @@ export interface LastAIRequest {
   sentAt: string;
 }
 
-/** 整体任务状态 */
 export interface TaskState {
   status: 'idle' | 'preparing' | 'running' | 'paused' | 'completed' | 'error';
+  currentStage: PipelineStage;
   chunks: ImageChunk[];
+  pageAnalyses: PageAnalysis[];
+  chunkSyntheses: ChunkSynthesis[];
+  globalSynthesis: StorySynthesis;
+  novelSections: NovelSection[];
   memory: MemoryState;
   config: OrchestratorConfig;
   creativeSettings: CreativeSettings;
-  /** 当前处理到第几块 */
   currentChunkIndex: number;
-  /** 最终输出的完整小说 */
   fullNovel: string;
-  /** 最近一次实际发给 AI 的请求 */
   lastAIRequest?: LastAIRequest;
 }
 
-/** 默认配置 */
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   chunkSize: 10,
-  maxConcurrency: 1,
+  maxConcurrency: 3,
   maxRetries: 3,
   retryDelay: 2000,
+  autoSkipOnError: false,
+};
+
+export const DEFAULT_STAGE_MODELS: StageModelConfig = {
+  'analyze-pages': '',
+  'synthesize-chunks': '',
+  'synthesize-story': '',
+  'write-sections': '',
 };
 
 export const DEFAULT_MEMORY_STATE: MemoryState = {
@@ -144,13 +219,23 @@ export const DEFAULT_MEMORY_STATE: MemoryState = {
   completedChunks: [],
 };
 
+export const DEFAULT_STORY_SYNTHESIS: StorySynthesis = {
+  status: 'pending',
+  storyOverview: '',
+  worldGuide: '',
+  characterGuide: '',
+  sceneOutline: [],
+  writingConstraints: [],
+  retryCount: 0,
+};
+
 export const DEFAULT_CREATIVE_SETTINGS: CreativeSettings = {
   presetId: 'professional-manga-novelist',
   systemPrompt: '',
+  userPromptTemplate: '',
   temperature: 0.75,
 };
 
-/** 预置模型列表 */
 export const OPENROUTER_MODELS: ModelOption[] = [
   { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4' },
   { id: 'anthropic/claude-opus-4', name: 'Claude Opus 4' },

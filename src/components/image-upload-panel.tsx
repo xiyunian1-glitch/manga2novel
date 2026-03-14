@@ -277,10 +277,13 @@ export function ImageUploadPanel({
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {formatSize(img.originalSize)}
-                      {img.compressedSize && (
+                      {img.compressedSize && img.compressedSize !== img.originalSize && (
                         <span className="text-green-600 ml-1">
                           → {formatSize(img.compressedSize)}
                         </span>
+                      )}
+                      {img.status === 'ready' && img.compressedSize === img.originalSize && (
+                        <span className="text-sky-700 ml-1">· 原图直传</span>
                       )}
                     </p>
                   </div>
