@@ -258,7 +258,7 @@ export function buildUserPrompt(
 }
 
 const PAGE_ANALYSIS_ITEM_OUTPUT_SCHEMA = `{
-  "summary": "本页剧情摘要",
+  "summary": "本页剧情摘要。必须保持为单个 JSON 字符串；若需要换行，只能写成 \\n，不能直接回车换行",
   "location": "场景地点，不确定可写未知",
   "timeHint": "时间线索，不确定可写未知",
   "keyEvents": ["关键事件1", "关键事件2"],
@@ -520,6 +520,7 @@ export function buildPageAnalysisPrompt(
 6. dialogue.text、narrationText、visualText 尽量保留原文，不要改写成摘要，不要补写不存在的字句。
 7. dialogue.speaker 如果无法确认，统一写“未确认”；如果该页没有对白，返回空数组。
 8. 看不清、被遮挡或没有证据的文字不要猜测，直接留空数组或用“未确认”。
+9. 所有 JSON 字符串字段都必须是单行合法 JSON 字符串；如果内容里需要换行，只能使用转义后的 \\n，绝对不要直接输出原始换行。
 
 待分析页码：
 ${stringifyPromptData(pageList)}
