@@ -20,6 +20,16 @@ type OpenRouterModelResponse = {
   }>;
 };
 
+type OpenRouterChatCompletionResponse = {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: {
+      content?: string;
+      reasoning_content?: string;
+    };
+  }>;
+};
+
 type GeminiModelResponse = {
   models?: Array<{
     name?: string;
@@ -188,6 +198,10 @@ function getWrappedProviderError(text: string): string | null {
   }
 
   return null;
+}
+
+function isLengthTruncatedCompletion(finishReason: string | undefined): boolean {
+  return String(finishReason || '').trim().toLowerCase() === 'length';
 }
 
 async function parseJsonResponse<T>(
@@ -584,26 +598,32 @@ async function callOpenRouterText(
     }),
   }, 'OpenRouter request failed');
 
-  const data = await parseJsonResponse<{
-    choices?: Array<{
-      message?: {
-        content?: string;
-      };
-    }>;
-  }>(
+  const data = await parseJsonResponse<OpenRouterChatCompletionResponse>(
     response,
     'OpenRouter request failed',
     'response was not valid JSON'
   );
 
-  const rawText = data.choices?.[0]?.message?.content;
+  const choice = data.choices?.[0];
+  const rawText = choice?.message?.content;
   if (!rawText) {
+    if (isLengthTruncatedCompletion(choice?.finish_reason)) {
+      throw new Error(
+        `OpenRouter truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
+      );
+    }
     throw new Error('OpenRouter returned an empty completion.');
   }
 
   const wrappedProviderError = getWrappedProviderError(rawText);
   if (wrappedProviderError) {
     throw new Error(wrappedProviderError);
+  }
+
+  if (isLengthTruncatedCompletion(choice?.finish_reason)) {
+    throw new Error(
+      `OpenRouter truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
+    );
   }
 
   return rawText;

@@ -84,7 +84,7 @@ const GLOBAL_SYNTHESIS_SYSTEM_PROMPT = `你是整书剧情综合器。
 
 const PAGE_ANALYSIS_TEMPERATURE = 0.2;
 const SYNTHESIS_TEMPERATURE = 0.2;
-const PAGE_ANALYSIS_MAX_TOKENS = 1024;
+const PAGE_ANALYSIS_MAX_TOKENS = 2048;
 const SYNTHESIS_MAX_TOKENS = 4096;
 const WRITING_MAX_TOKENS = 2500;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
@@ -530,6 +530,10 @@ function isPageAnalysisConnectionError(message: string): boolean {
 
 function isBrowserReachabilityError(message: string): boolean {
   return /network request could not reach|direct browser request could not reach|local fallback proxy .* unreachable|request failed before it reached the upstream model|request never reached the upstream model/i.test(message);
+}
+
+function isTruncatedCompletionError(message: string): boolean {
+  return /truncated the completion|finish_reason\s*=\s*length/i.test(message);
 }
 
 function createRequestSignal(
@@ -1620,6 +1624,7 @@ export class TaskOrchestrator {
           const tokenLimitError = parseMaxTokenLimitError(errorMessage);
           const inputTokenLimitError = isInputTokenLimitError(errorMessage);
           const browserReachabilityError = isBrowserReachabilityError(errorMessage);
+          const truncatedCompletionError = isTruncatedCompletionError(errorMessage);
           const retryableModelAvailabilityError = isRetryableModelAvailabilityError(errorMessage);
           const nextModel = modelCandidates[modelIndex + 1];
 
@@ -1638,6 +1643,19 @@ export class TaskOrchestrator {
             target.retryCount = attempt + 1;
             target.error = errorMessage;
             break;
+          }
+
+          if (truncatedCompletionError) {
+            const nextMaxOutputTokens = Math.min(
+              12288,
+              Math.max(currentMaxOutputTokens + 1024, currentMaxOutputTokens * 2)
+            );
+
+            if (nextMaxOutputTokens > currentMaxOutputTokens) {
+              currentMaxOutputTokens = nextMaxOutputTokens;
+              target.error = `Completion was truncated, automatically retrying with max_tokens=${nextMaxOutputTokens}.`;
+              continue;
+            }
           }
 
           if (browserReachabilityError) {
