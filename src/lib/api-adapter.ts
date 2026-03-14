@@ -276,6 +276,75 @@ function extractLikelyJsonText(text: string): string | null {
   return text.slice(start, end + 1);
 }
 
+function escapeControlCharactersInJsonStrings(text: string): string {
+  let result = '';
+  let inString = false;
+  let escaping = false;
+
+  for (const char of text) {
+    if (!inString) {
+      result += char;
+      if (char === '"') {
+        inString = true;
+      }
+      continue;
+    }
+
+    if (escaping) {
+      result += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      result += char;
+      escaping = true;
+      continue;
+    }
+
+    if (char === '"') {
+      result += char;
+      inString = false;
+      continue;
+    }
+
+    if (char === '\n') {
+      result += '\\n';
+      continue;
+    }
+
+    if (char === '\r') {
+      result += '\\r';
+      continue;
+    }
+
+    if (char === '\t') {
+      result += '\\t';
+      continue;
+    }
+
+    if (char === '\b') {
+      result += '\\b';
+      continue;
+    }
+
+    if (char === '\f') {
+      result += '\\f';
+      continue;
+    }
+
+    const charCode = char.charCodeAt(0);
+    if (charCode < 0x20) {
+      result += `\\u${charCode.toString(16).padStart(4, '0')}`;
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
 function repairCommonJsonIssues(text: string): string {
   return text
     .replace(/^\uFEFF/, '')
@@ -334,15 +403,35 @@ export function extractJsonValue<T>(rawText: string): T {
     ...fencedCandidates,
     extractLikelyJsonText(text),
     ...fencedCandidates.map((candidate) => extractLikelyJsonText(candidate)),
+    escapeControlCharactersInJsonStrings(text),
+    ...fencedCandidates.map((candidate) => escapeControlCharactersInJsonStrings(candidate)),
     repairCommonJsonIssues(text),
     ...fencedCandidates.map((candidate) => repairCommonJsonIssues(candidate)),
+    repairCommonJsonIssues(escapeControlCharactersInJsonStrings(text)),
+    ...fencedCandidates.map((candidate) => repairCommonJsonIssues(escapeControlCharactersInJsonStrings(candidate))),
     (() => {
       const extracted = extractLikelyJsonText(text);
       return extracted ? repairCommonJsonIssues(extracted) : null;
     })(),
+    (() => {
+      const extracted = extractLikelyJsonText(text);
+      return extracted ? escapeControlCharactersInJsonStrings(extracted) : null;
+    })(),
+    (() => {
+      const extracted = extractLikelyJsonText(text);
+      return extracted ? repairCommonJsonIssues(escapeControlCharactersInJsonStrings(extracted)) : null;
+    })(),
     ...fencedCandidates.map((candidate) => {
       const extracted = extractLikelyJsonText(candidate);
       return extracted ? repairCommonJsonIssues(extracted) : null;
+    }),
+    ...fencedCandidates.map((candidate) => {
+      const extracted = extractLikelyJsonText(candidate);
+      return extracted ? escapeControlCharactersInJsonStrings(extracted) : null;
+    }),
+    ...fencedCandidates.map((candidate) => {
+      const extracted = extractLikelyJsonText(candidate);
+      return extracted ? repairCommonJsonIssues(escapeControlCharactersInJsonStrings(extracted)) : null;
     }),
   ].filter((candidate): candidate is string => Boolean(candidate))));
 
