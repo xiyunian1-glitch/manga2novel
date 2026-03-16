@@ -122,9 +122,6 @@ const PAGE_ANALYSIS_MAX_TOKENS = 2048;
 const SYNTHESIS_MAX_TOKENS = 6144;
 const WRITING_MAX_TOKENS = 4096;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
-const SYNTHESIS_REQUEST_TIMEOUT_MS = 120_000;
-const SECTION_WRITING_TIMEOUT_MS = 150_000;
-const FINAL_POLISH_TIMEOUT_MS = 180_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1045,19 +1042,11 @@ export class TaskOrchestrator {
   }
 
   private getRequestTimeoutMs(request: ModelRequest): number | null {
-    switch (request.stage) {
-      case 'analyze-pages':
-        return PAGE_ANALYSIS_BATCH_TIMEOUT_MS;
-      case 'synthesize-chunks':
-      case 'synthesize-story':
-        return SYNTHESIS_REQUEST_TIMEOUT_MS;
-      case 'write-sections':
-        return SECTION_WRITING_TIMEOUT_MS;
-      case 'polish-novel':
-        return FINAL_POLISH_TIMEOUT_MS;
-      default:
-        return null;
+    if (request.stage === 'analyze-pages' && request.imageNames.length > 1) {
+      return PAGE_ANALYSIS_BATCH_TIMEOUT_MS;
     }
+
+    return null;
   }
 
   private getPageAnalysesForChunk(chunkIndex: number): PageAnalysis[] {
