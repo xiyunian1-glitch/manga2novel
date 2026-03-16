@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import type { CreativePreset, CreativeSettings } from '@/lib/types';
+import { WRITING_MODE_LABELS } from '@/lib/types';
 import { composeSystemPrompt, splitSystemPrompt } from '@/lib/prompts';
 
 interface CreativeSettingsPanelProps {
@@ -127,6 +128,32 @@ export function CreativeSettingsPanel({
           </Select>
           <p className="text-xs text-muted-foreground">
             选择预设时只会替换“风格”内容，不会改动补充提示和系统提示词。
+          </p>
+        </div>
+
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <Label>写作模式</Label>
+          </div>
+          <Select
+            value={settings.writingMode}
+            onValueChange={(value) => {
+              if (value === 'faithful' || value === 'literary') {
+                onUpdate({ writingMode: value });
+              }
+            }}
+            disabled={disabled}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="z-[9999]">
+              <SelectItem value="faithful">{WRITING_MODE_LABELS.faithful}</SelectItem>
+              <SelectItem value="literary">{WRITING_MODE_LABELS.literary}</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            忠实转写更稳，优先保留原信息；文学改写会在不改变剧情的前提下加强氛围、节奏和文字质感。
           </p>
         </div>
 

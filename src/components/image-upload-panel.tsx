@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { ImagePlus, X, GripVertical, Trash2, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ImageItem } from '@/lib/types';
@@ -38,6 +37,14 @@ function withRelativePath(file: File, relativePath: string): File {
     // Ignore if the browser does not allow redefining the property.
   }
   return file;
+}
+
+function supportsDirectoryInput(input: HTMLInputElement | null): boolean {
+  if (!input) {
+    return false;
+  }
+
+  return 'webkitdirectory' in input || 'webkitEntries' in input || 'directory' in input;
 }
 
 export function ImageUploadPanel({
@@ -108,9 +115,6 @@ export function ImageUploadPanel({
 
     const canUseDirectoryPicker = typeof window !== 'undefined'
       && typeof (window as Window & { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker === 'function';
-    const isLikelyMobile = typeof navigator !== 'undefined'
-      && navigator.maxTouchPoints > 0
-      && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
     if (canUseDirectoryPicker) {
       try {
@@ -132,20 +136,15 @@ export function ImageUploadPanel({
       return;
     }
 
-    if (isLikelyMobile) {
-      toast.info('当前设备通常不支持选择整个文件夹，已切换为多图上传');
-      openFilePicker();
-      return;
-    }
-
     const input = folderInputRef.current;
-    if (!input) {
-      openFilePicker();
+    if (input && supportsDirectoryInput(input)) {
+      input.value = '';
+      input.click();
       return;
     }
 
-    input.value = '';
-    input.click();
+    toast.info('当前浏览器不支持直接选择文件夹，已切换为多图上传。手机端建议优先尝试较新的 Chrome、Edge 或 Firefox。');
+    openFilePicker();
   }, [collectDirectoryFiles, disabled, onAdd, openFilePicker, sortFiles]);
 
   const handleDrop = useCallback(
@@ -211,7 +210,9 @@ export function ImageUploadPanel({
           <p className="text-sm text-muted-foreground">
             拖拽图片到此处，或 <span className="text-primary underline">点击选择</span>
           </p>
-          <p className="text-xs text-muted-foreground mt-1">支持 JPG/PNG/WebP，也支持直接选择整個文件夹</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            支持 JPG/PNG/WebP，也支持直接选择整个文件夹。手机端是否能选文件夹取决于当前浏览器。
+          </p>
           <div
             className="mt-3 flex flex-wrap items-center justify-center gap-2"
             data-picker-control="true"
@@ -241,7 +242,6 @@ export function ImageUploadPanel({
           <input
             ref={folderInputRef}
             type="file"
-            accept="image/*"
             multiple
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
@@ -251,7 +251,7 @@ export function ImageUploadPanel({
 
         {/* 图片列表 */}
         {images.length > 0 && (
-          <ScrollArea className="mt-4 max-h-[300px]">
+          <div className="mt-4 max-h-[300px] overflow-y-auto overscroll-contain pr-2">
             <div className="space-y-1">
               {images.map((img, index) => (
                 <div
@@ -311,7 +311,7 @@ export function ImageUploadPanel({
                 </div>
               ))}
             </div>
-          </ScrollArea>
+          </div>
         )}
       </CardContent>
     </Card>

@@ -1,10 +1,21 @@
 import { createServer } from 'node:http';
 
+if (process.env.M2N_PROXY_USE_ENV_PROXY !== '1') {
+  delete process.env.HTTP_PROXY;
+  delete process.env.HTTPS_PROXY;
+  delete process.env.ALL_PROXY;
+  delete process.env.http_proxy;
+  delete process.env.https_proxy;
+  delete process.env.all_proxy;
+}
+
 const HOST = process.env.M2N_PROXY_HOST || '127.0.0.1';
-const PORT = Number(process.env.M2N_PROXY_PORT || 8787);
+const PORT_START = Number(process.env.M2N_PROXY_PORT_START || process.env.M2N_PROXY_PORT || 8787);
+const PORT_END = Number(process.env.M2N_PROXY_PORT_END || Math.max(PORT_START, PORT_START + 10));
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
+  'proxy-connection',
   'proxy-authenticate',
   'proxy-authorization',
   'te',
@@ -14,13 +25,25 @@ const HOP_BY_HOP_HEADERS = new Set([
   'host',
   'content-length',
   'origin',
+  'expect',
+  'referer',
+  'accept-encoding',
+  'accept-language',
+  'cache-control',
+  'pragma',
+  'priority',
+  'dnt',
 ]);
+
+let activePort = PORT_START;
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', '*');
+  response.setHeader('Access-Control-Expose-Headers', 'X-Manga2Novel-Proxy');
   response.setHeader('Access-Control-Max-Age', '43200');
+  response.setHeader('X-Manga2Novel-Proxy', '1');
 }
 
 function sendJson(response, statusCode, payload) {
@@ -63,7 +86,11 @@ function buildUpstreamHeaders(request) {
 
   for (const [name, rawValue] of Object.entries(request.headers)) {
     const lowerName = name.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(lowerName) || lowerName === 'x-target-url') {
+    if (
+      HOP_BY_HOP_HEADERS.has(lowerName)
+      || lowerName === 'x-target-url'
+      || lowerName.startsWith('sec-')
+    ) {
       continue;
     }
 
@@ -81,12 +108,21 @@ function buildUpstreamHeaders(request) {
 }
 
 async function handleProxy(request, response) {
-  const requestUrl = new URL(request.url || '/', `http://${request.headers.host || `${HOST}:${PORT}`}`);
+  const requestUrl = new URL(request.url || '/', `http://${request.headers.host || `${HOST}:${activePort}`}`);
 
   if (request.method === 'OPTIONS') {
     setCorsHeaders(response);
     response.statusCode = 204;
     response.end();
+    return;
+  }
+
+  if (requestUrl.pathname === '/health') {
+    sendJson(response, 200, {
+      ok: true,
+      host: HOST,
+      port: activePort,
+    });
     return;
   }
 
@@ -120,7 +156,12 @@ async function handleProxy(request, response) {
     response.statusCode = upstreamResponse.status;
 
     upstreamResponse.headers.forEach((value, name) => {
-      if (HOP_BY_HOP_HEADERS.has(name.toLowerCase()) || name.toLowerCase().startsWith('access-control-')) {
+      const lowerName = name.toLowerCase();
+      if (
+        HOP_BY_HOP_HEADERS.has(lowerName)
+        || lowerName === 'content-encoding'
+        || lowerName.startsWith('access-control-')
+      ) {
         return;
       }
 
@@ -132,9 +173,51 @@ async function handleProxy(request, response) {
   } catch (error) {
     sendJson(response, 502, {
       error: error instanceof Error ? error.message : 'Upstream request failed',
+      cause: error && typeof error === 'object' && 'cause' in error && error.cause && typeof error.cause === 'object'
+        ? {
+            name: error.cause.name,
+            code: error.cause.code,
+            message: error.cause.message,
+          }
+        : undefined,
       targetUrl,
     });
   }
+}
+
+function listenOnPort(server, port) {
+  return new Promise((resolve, reject) => {
+    const handleError = (error) => {
+      server.off('listening', handleListening);
+      reject(error);
+    };
+    const handleListening = () => {
+      server.off('error', handleError);
+      resolve(port);
+    };
+
+    server.once('error', handleError);
+    server.once('listening', handleListening);
+    server.listen(port, HOST);
+  });
+}
+
+async function listenOnAvailablePort(server) {
+  for (let port = PORT_START; port <= PORT_END; port += 1) {
+    try {
+      const nextPort = await listenOnPort(server, port);
+      activePort = nextPort;
+      return nextPort;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(`No available local proxy port found in range ${PORT_START}-${PORT_END}.`);
 }
 
 const server = createServer((request, response) => {
@@ -145,6 +228,14 @@ const server = createServer((request, response) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Local API proxy listening on http://${HOST}:${PORT}/proxy`);
-});
+void listenOnAvailablePort(server)
+  .then((port) => {
+    console.log(`Local API proxy listening on http://${HOST}:${port}/proxy`);
+    if (port !== PORT_START) {
+      console.log(`Default port ${PORT_START} was unavailable, switched to ${port}.`);
+    }
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : error);
+    process.exitCode = 1;
+  });

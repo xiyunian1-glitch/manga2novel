@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { BookOpen, Check, Copy, Download, LibraryBig } from 'lucide-react';
+import { BookOpen, Check, Copy, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -22,7 +22,10 @@ export function NovelPreview({ taskState, onExport }: NovelPreviewProps) {
     setTimeout(() => setCopied(false), 2000);
   }, [taskState.fullNovel]);
 
-  const completedSections = taskState.novelSections.filter((section) => section.status === 'success');
+  const completedSections = taskState.novelSections.filter((section) => (
+    section.status === 'success' && Boolean(section.markdownBody?.trim())
+  ));
+  const hasFinalPolish = taskState.finalPolish.status === 'success' && Boolean(taskState.finalPolish.markdownBody?.trim());
 
   return (
     <Card className="flex h-full flex-col">
@@ -47,24 +50,21 @@ export function NovelPreview({ taskState, onExport }: NovelPreviewProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="flex-1 min-h-0 space-y-4">
-        {taskState.globalSynthesis.sceneOutline.length > 0 ? (
-          <div className="rounded-xl border bg-muted/20 p-3">
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-              <LibraryBig className="h-4 w-4" />
-              场景规划
+        {hasFinalPolish ? (
+          <ScrollArea className="h-[500px]">
+            <div className="space-y-4 pr-4">
+              <div className="flex items-center gap-2">
+                <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  全书统稿版
+                </span>
+                <Separator className="flex-1" />
+              </div>
+              <div className="whitespace-pre-wrap text-sm leading-7">
+                {taskState.finalPolish.markdownBody}
+              </div>
             </div>
-            <div className="space-y-2 text-xs text-muted-foreground">
-              {taskState.globalSynthesis.sceneOutline.map((scene) => (
-                <div key={scene.sceneId} className="rounded-lg bg-background/70 p-2">
-                  <div className="font-medium text-foreground">{scene.title}</div>
-                  <div className="mt-1 leading-relaxed">{scene.summary}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {taskState.fullNovel ? (
+          </ScrollArea>
+        ) : completedSections.length > 0 ? (
           <ScrollArea className="h-[500px]">
             <div className="space-y-4 pr-4">
               {completedSections.map((section) => (

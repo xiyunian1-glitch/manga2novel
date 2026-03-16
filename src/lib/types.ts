@@ -1,11 +1,13 @@
-export type APIProvider = 'openrouter' | 'gemini';
+export type APIProvider = 'compatible' | 'gemini';
 export type RequestStage = Exclude<PipelineStage, 'idle'>;
+export type WritingMode = 'faithful' | 'literary';
 
 export const REQUEST_STAGES: RequestStage[] = [
   'analyze-pages',
   'synthesize-chunks',
   'synthesize-story',
   'write-sections',
+  'polish-novel',
 ];
 
 export const REQUEST_STAGE_LABELS: Record<RequestStage, string> = {
@@ -13,16 +15,36 @@ export const REQUEST_STAGE_LABELS: Record<RequestStage, string> = {
   'synthesize-chunks': '分块综合',
   'synthesize-story': '整书综合',
   'write-sections': '章节写作',
+  'polish-novel': '全书统稿',
 };
 
 export type StageModelConfig = Record<RequestStage, string>;
 
+export interface StageAPIOverrideConfig {
+  enabled: boolean;
+  provider: APIProvider;
+  providerLabel?: string;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+}
+
+export type StageAPIOverrideMap = Record<RequestStage, StageAPIOverrideConfig>;
+
 export interface APIConfig {
   provider: APIProvider;
+  providerLabel?: string;
   apiKey: string;
   model: string;
   baseUrl?: string;
   stageModels: StageModelConfig;
+  stageAPIOverrides: StageAPIOverrideMap;
+}
+
+export interface APIProfileSummary {
+  id: string;
+  name: string;
+  updatedAt: string;
 }
 
 export interface CreativeSettings {
@@ -30,6 +52,7 @@ export interface CreativeSettings {
   systemPrompt: string;
   userPromptTemplate: string;
   temperature: number;
+  writingMode: WritingMode;
 }
 
 export interface CreativePreset {
@@ -61,7 +84,8 @@ export type PipelineStage =
   | 'analyze-pages'
   | 'synthesize-chunks'
   | 'synthesize-story'
-  | 'write-sections';
+  | 'write-sections'
+  | 'polish-novel';
 
 export interface ImageChunk {
   index: number;
@@ -93,6 +117,7 @@ export interface PageAnalysis {
   index: number;
   pageNumber: number;
   chunkIndex: number;
+  analysisBatchIndex: number;
   imageName: string;
   status: ChunkStatus;
   summary?: string;
@@ -133,6 +158,14 @@ export interface StorySynthesis {
   characterGuide: string;
   sceneOutline: ScenePlan[];
   writingConstraints: string[];
+  outlineConfirmed: boolean;
+  error?: string;
+  retryCount: number;
+}
+
+export interface FinalPolish {
+  status: ChunkStatus;
+  markdownBody?: string;
   error?: string;
   retryCount: number;
 }
@@ -156,10 +189,12 @@ export interface MemoryState {
 
 export interface OrchestratorConfig {
   chunkSize: number;
+  synthesisChunkCount: number;
   maxConcurrency: number;
   maxRetries: number;
   retryDelay: number;
   autoSkipOnError: boolean;
+  enableFinalPolish: boolean;
 }
 
 export interface AIResponse {
@@ -168,8 +203,20 @@ export interface AIResponse {
   endingDetail: string;
 }
 
+export interface LastAIRequestAttempt {
+  sequence: number;
+  model: string;
+  sentAt: string;
+  finishedAt?: string;
+  maxOutputTokens?: number;
+  outcome: 'success' | 'error';
+  error?: string;
+  nextAction?: string;
+}
+
 export interface LastAIRequest {
   provider: APIProvider;
+  providerLabel?: string;
   model: string;
   baseUrl?: string;
   stage: PipelineStage;
@@ -180,6 +227,11 @@ export interface LastAIRequest {
   systemPrompt: string;
   userPrompt: string;
   sentAt: string;
+  totalAttempts: number;
+  status: 'running' | 'success' | 'error' | 'interrupted';
+  firstFailureReason?: string;
+  lastError?: string;
+  attempts: LastAIRequestAttempt[];
 }
 
 export interface TaskState {
@@ -190,6 +242,7 @@ export interface TaskState {
   chunkSyntheses: ChunkSynthesis[];
   globalSynthesis: StorySynthesis;
   novelSections: NovelSection[];
+  finalPolish: FinalPolish;
   memory: MemoryState;
   config: OrchestratorConfig;
   creativeSettings: CreativeSettings;
@@ -199,11 +252,13 @@ export interface TaskState {
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  chunkSize: 10,
+  chunkSize: 1,
+  synthesisChunkCount: 8,
   maxConcurrency: 3,
   maxRetries: 3,
   retryDelay: 2000,
   autoSkipOnError: false,
+  enableFinalPolish: false,
 };
 
 export const DEFAULT_STAGE_MODELS: StageModelConfig = {
@@ -211,7 +266,109 @@ export const DEFAULT_STAGE_MODELS: StageModelConfig = {
   'synthesize-chunks': '',
   'synthesize-story': '',
   'write-sections': '',
+  'polish-novel': '',
 };
+
+export const DEFAULT_STAGE_API_OVERRIDES: StageAPIOverrideMap = {
+  'analyze-pages': {
+    enabled: false,
+    provider: 'compatible',
+    providerLabel: '',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  },
+  'synthesize-chunks': {
+    enabled: false,
+    provider: 'compatible',
+    providerLabel: '',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  },
+  'synthesize-story': {
+    enabled: false,
+    provider: 'compatible',
+    providerLabel: '',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  },
+  'write-sections': {
+    enabled: false,
+    provider: 'compatible',
+    providerLabel: '',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  },
+  'polish-novel': {
+    enabled: false,
+    provider: 'compatible',
+    providerLabel: '',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  },
+};
+
+export function resolveProviderDisplayLabel(provider: APIProvider, providerLabel?: string): string {
+  return providerLabel?.trim() || PROVIDER_DISPLAY_NAMES[provider];
+}
+
+export function resolveStageModel(config: APIConfig, stage: RequestStage): string {
+  const stageOverride = config.stageAPIOverrides[stage];
+  const overrideModel = stageOverride.enabled ? stageOverride.model.trim() : '';
+  const stageModel = config.stageModels[stage]?.trim() || '';
+  const defaultModel = config.model.trim();
+  const canUseDefaultModel = !stageOverride.enabled || stageOverride.provider === config.provider;
+
+  return overrideModel || stageModel || (canUseDefaultModel ? defaultModel : '');
+}
+
+export function resolveStageAPIConfig(config: APIConfig, stage: RequestStage): APIConfig {
+  const stageOverride = config.stageAPIOverrides[stage];
+  const useStageOverride = stageOverride.enabled;
+  const provider = useStageOverride ? stageOverride.provider : config.provider;
+  const providerLabel = resolveProviderDisplayLabel(
+    provider,
+    useStageOverride ? stageOverride.providerLabel : config.providerLabel
+  );
+  const apiKey = useStageOverride
+    ? (stageOverride.apiKey.trim() || config.apiKey.trim())
+    : config.apiKey.trim();
+  const model = resolveStageModel(config, stage);
+  const baseUrl = useStageOverride ? stageOverride.baseUrl?.trim() || '' : config.baseUrl?.trim() || '';
+
+  return {
+    ...config,
+    provider,
+    providerLabel,
+    apiKey,
+    model,
+    baseUrl,
+  };
+}
+
+export function getEnabledRequestStages(
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+): RequestStage[] {
+  if (orchestratorConfig?.enableFinalPolish) {
+    return REQUEST_STAGES;
+  }
+
+  return REQUEST_STAGES.filter((stage) => stage !== 'polish-novel');
+}
+
+export function canResolveStageAccess(
+  config: APIConfig,
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+): boolean {
+  return getEnabledRequestStages(orchestratorConfig).every((stage) => {
+    const stageConfig = resolveStageAPIConfig(config, stage);
+    return Boolean(stageConfig.apiKey.trim() && stageConfig.model.trim());
+  });
+}
 
 export const DEFAULT_MEMORY_STATE: MemoryState = {
   globalSummary: '',
@@ -226,6 +383,12 @@ export const DEFAULT_STORY_SYNTHESIS: StorySynthesis = {
   characterGuide: '',
   sceneOutline: [],
   writingConstraints: [],
+  outlineConfirmed: false,
+  retryCount: 0,
+};
+
+export const DEFAULT_FINAL_POLISH: FinalPolish = {
+  status: 'pending',
   retryCount: 0,
 };
 
@@ -234,14 +397,23 @@ export const DEFAULT_CREATIVE_SETTINGS: CreativeSettings = {
   systemPrompt: '',
   userPromptTemplate: '',
   temperature: 0.75,
+  writingMode: 'faithful',
 };
 
-export const OPENROUTER_MODELS: ModelOption[] = [
-  { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4' },
-  { id: 'anthropic/claude-opus-4', name: 'Claude Opus 4' },
-  { id: 'google/gemini-2.5-pro-preview', name: 'Gemini 2.5 Pro' },
-  { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash' },
+export const WRITING_MODE_LABELS: Record<WritingMode, string> = {
+  faithful: '忠实转写',
+  literary: '文学改写',
+};
+
+export const DEFAULT_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
+export const LEGACY_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+export const COMPATIBLE_MODELS: ModelOption[] = [
   { id: 'openai/gpt-4.1', name: 'GPT-4.1' },
+  { id: 'openai/gpt-4.1-mini', name: 'GPT-4.1 Mini' },
+  { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4' },
+  { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+  { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat' },
 ];
 
 export const GEMINI_MODELS: ModelOption[] = [
@@ -249,3 +421,8 @@ export const GEMINI_MODELS: ModelOption[] = [
   { id: 'gemini-2.5-flash-preview-05-20', name: 'Gemini 2.5 Flash' },
   { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
 ];
+
+export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
+  compatible: '自定义兼容接口',
+  gemini: 'Google Gemini',
+};

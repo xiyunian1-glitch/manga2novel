@@ -1,19 +1,51 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { APIConfig, CreativePreset, CreativeSettings, ImageItem, OrchestratorConfig, TaskState } from '@/lib/types';
+import type {
+  APIConfig,
+  APIProfileSummary,
+  CreativePreset,
+  CreativeSettings,
+  ImageItem,
+  OrchestratorConfig,
+  RequestStage,
+  ScenePlan,
+  StageAPIOverrideConfig,
+  StageAPIOverrideMap,
+  TaskState,
+} from '@/lib/types';
 import {
+  DEFAULT_COMPATIBLE_BASE_URL,
   DEFAULT_CREATIVE_SETTINGS,
+  DEFAULT_FINAL_POLISH,
   DEFAULT_ORCHESTRATOR_CONFIG,
   DEFAULT_MEMORY_STATE,
+  DEFAULT_STAGE_API_OVERRIDES,
   DEFAULT_STAGE_MODELS,
   DEFAULT_STORY_SYNTHESIS,
+  getEnabledRequestStages,
+  LEGACY_OPENROUTER_BASE_URL,
+  PROVIDER_DISPLAY_NAMES,
   REQUEST_STAGES,
+  resolveProviderDisplayLabel,
+  resolveStageAPIConfig,
+  resolveStageModel,
 } from '@/lib/types';
 import { TaskOrchestrator } from '@/lib/task-orchestrator';
 import { secureGet, secureRemove, secureSet, getJSON, setJSON } from '@/lib/crypto-store';
 import { fetchModels as fetchProviderModels } from '@/lib/api-adapter';
 import { createPreviewUrl, revokePreviewUrl } from '@/lib/image-pipeline';
+import {
+  clearWorkspaceSnapshot,
+  loadWorkspaceSnapshot,
+  saveWorkspaceImageFiles,
+  saveWorkspaceImageMeta,
+  saveWorkspaceTaskState,
+  serializeImages,
+  serializeTaskState,
+  type PersistedTaskState,
+  type RestorableImageItem,
+} from '@/lib/workspace-store';
 import {
   CREATIVE_PRESETS,
   CUSTOM_PRESET_ID,
@@ -27,6 +59,18 @@ import {
 
 let idCounter = 0;
 const CREATIVE_SETTINGS_TEMPLATE_VERSION = 6;
+const API_PROFILES_STORAGE_KEY = 'apiProfiles';
+const ACTIVE_API_PROFILE_ID_STORAGE_KEY = 'activeApiProfileId';
+const DEFAULT_API_PROFILE_NAME = '默认配置';
+
+interface StoredAPIProfile extends APIProfileSummary {
+  provider: APIConfig['provider'];
+  providerLabel?: string;
+  model: string;
+  baseUrl?: string;
+  stageModels: APIConfig['stageModels'];
+  stageAPIOverrides: Record<RequestStage, Omit<StageAPIOverrideConfig, 'apiKey'>>;
+}
 
 function resolvePresetIdFromPresets(systemPrompt: string, presets: CreativePreset[]): string {
   const builtinPresetId = resolveCreativePresetId(systemPrompt);
@@ -42,15 +86,384 @@ function resolvePresetIdFromPresets(systemPrompt: string, presets: CreativePrese
   return matchedPreset?.id || CUSTOM_PRESET_ID;
 }
 
-function canResolveModels(config: APIConfig): boolean {
-  return REQUEST_STAGES.every((stage) => {
-    const stageModel = config.stageModels[stage]?.trim() || '';
-    return Boolean(stageModel || config.model.trim());
+function canResolveModels(
+  config: APIConfig,
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+): boolean {
+  return getEnabledRequestStages(orchestratorConfig).every((stage) => Boolean(resolveStageModel(config, stage)));
+}
+
+function normalizeProviderLabel(config: Pick<APIConfig, 'provider' | 'providerLabel'>): string {
+  return resolveProviderDisplayLabel(config.provider, config.providerLabel);
+}
+
+function normalizeProvider(provider: APIConfig['provider'] | 'openrouter' | null | undefined): APIConfig['provider'] {
+  if (provider === 'gemini') {
+    return 'gemini';
+  }
+
+  return 'compatible';
+}
+
+function normalizeBaseUrl(
+  provider: APIConfig['provider'],
+  baseUrl: string | null | undefined,
+  legacyProvider?: APIConfig['provider'] | 'openrouter' | null
+): string {
+  const normalizedBaseUrl = baseUrl?.trim() || '';
+  if (normalizedBaseUrl) {
+    return normalizedBaseUrl;
+  }
+
+  if (provider === 'compatible' && legacyProvider === 'openrouter') {
+    return LEGACY_OPENROUTER_BASE_URL;
+  }
+
+  return '';
+}
+
+function normalizeStageAPIOverride(
+  stage: RequestStage,
+  override: Partial<StageAPIOverrideConfig> | null | undefined,
+  stageApiKeys?: Partial<Record<RequestStage, string>>
+): StageAPIOverrideConfig {
+  const provider = normalizeProvider(override?.provider);
+
+  return {
+    enabled: Boolean(override?.enabled),
+    provider,
+    providerLabel: normalizeProviderLabel({
+      provider,
+      providerLabel: override?.providerLabel || '',
+    }),
+    apiKey: stageApiKeys?.[stage]?.trim() || override?.apiKey?.trim() || '',
+    model: override?.model?.trim() || '',
+    baseUrl: normalizeBaseUrl(provider, override?.baseUrl),
+  };
+}
+
+function normalizeStageAPIOverrides(
+  overrides: Partial<Record<RequestStage, Partial<StageAPIOverrideConfig>>> | null | undefined,
+  stageApiKeys?: Partial<Record<RequestStage, string>>
+): StageAPIOverrideMap {
+  return REQUEST_STAGES.reduce((result, stage) => {
+    result[stage] = normalizeStageAPIOverride(stage, overrides?.[stage], stageApiKeys);
+    return result;
+  }, { ...DEFAULT_STAGE_API_OVERRIDES });
+}
+
+function serializeStageAPIOverrides(overrides: StageAPIOverrideMap): Record<RequestStage, Omit<StageAPIOverrideConfig, 'apiKey'>> {
+  return REQUEST_STAGES.reduce((result, stage) => {
+    const override = overrides[stage];
+    result[stage] = {
+      enabled: override.enabled,
+      provider: override.provider,
+      providerLabel: normalizeProviderLabel({
+        provider: override.provider,
+        providerLabel: override.providerLabel || '',
+      }),
+      model: override.model.trim(),
+      baseUrl: override.baseUrl?.trim() || '',
+    };
+    return result;
+  }, {} as Record<RequestStage, Omit<StageAPIOverrideConfig, 'apiKey'>>);
+}
+
+function extractStageApiKeys(overrides: StageAPIOverrideMap): Partial<Record<RequestStage, string>> {
+  return REQUEST_STAGES.reduce((result, stage) => {
+    const apiKey = overrides[stage].apiKey.trim();
+    if (apiKey) {
+      result[stage] = apiKey;
+    }
+    return result;
+  }, {} as Partial<Record<RequestStage, string>>);
+}
+
+function normalizeStageModels(stageModels: Partial<APIConfig['stageModels']> | null | undefined): APIConfig['stageModels'] {
+  return REQUEST_STAGES.reduce((result, stage) => {
+    result[stage] = stageModels?.[stage]?.trim() || '';
+    return result;
+  }, { ...DEFAULT_STAGE_MODELS });
+}
+
+function normalizeApiConfig(config: APIConfig): APIConfig {
+  return {
+    provider: config.provider,
+    providerLabel: normalizeProviderLabel(config),
+    apiKey: config.apiKey.trim(),
+    model: config.model.trim(),
+    baseUrl: config.baseUrl?.trim() || '',
+    stageModels: normalizeStageModels(config.stageModels),
+    stageAPIOverrides: normalizeStageAPIOverrides(config.stageAPIOverrides),
+  };
+}
+
+function createEmptyApiConfig(): APIConfig {
+  return {
+    provider: 'compatible',
+    providerLabel: PROVIDER_DISPLAY_NAMES.compatible,
+    apiKey: '',
+    model: '',
+    baseUrl: DEFAULT_COMPATIBLE_BASE_URL,
+    stageModels: { ...DEFAULT_STAGE_MODELS },
+    stageAPIOverrides: { ...DEFAULT_STAGE_API_OVERRIDES },
+  };
+}
+
+function createApiProfileId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getProfileApiKeyStorageKey(profileId: string): string {
+  return `apiKey_profile_${profileId}`;
+}
+
+function getProfileStageApiKeysStorageKey(profileId: string): string {
+  return `stageApiKeys_profile_${profileId}`;
+}
+
+function buildStoredApiProfile(
+  profileId: string,
+  profileName: string,
+  config: APIConfig,
+  updatedAt = new Date().toISOString()
+): StoredAPIProfile {
+  const normalizedConfig = normalizeApiConfig(config);
+
+  return {
+    id: profileId,
+    name: profileName.trim() || DEFAULT_API_PROFILE_NAME,
+    updatedAt,
+    provider: normalizedConfig.provider,
+    providerLabel: normalizedConfig.providerLabel || PROVIDER_DISPLAY_NAMES[normalizedConfig.provider],
+    model: normalizedConfig.model,
+    baseUrl: normalizedConfig.baseUrl || '',
+    stageModels: normalizedConfig.stageModels,
+    stageAPIOverrides: serializeStageAPIOverrides(normalizedConfig.stageAPIOverrides),
+  };
+}
+
+function normalizeStoredApiProfile(profile: Partial<StoredAPIProfile> | null | undefined): StoredAPIProfile {
+  const provider = normalizeProvider(profile?.provider);
+  const normalizedConfig = normalizeApiConfig({
+    provider,
+    providerLabel: profile?.providerLabel || PROVIDER_DISPLAY_NAMES[provider],
+    apiKey: '',
+    model: profile?.model || '',
+    baseUrl: normalizeBaseUrl(provider, profile?.baseUrl),
+    stageModels: { ...DEFAULT_STAGE_MODELS, ...(profile?.stageModels || {}) },
+    stageAPIOverrides: normalizeStageAPIOverrides(profile?.stageAPIOverrides as Partial<StageAPIOverrideMap> | undefined),
   });
+
+  return buildStoredApiProfile(
+    profile?.id || createApiProfileId(),
+    profile?.name || DEFAULT_API_PROFILE_NAME,
+    normalizedConfig,
+    profile?.updatedAt || new Date().toISOString()
+  );
+}
+
+function parseStageApiKeys(raw: string | null): Partial<Record<RequestStage, string>> | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(raw) as Partial<Record<RequestStage, string>>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadApiConfigFromProfile(profile: StoredAPIProfile): Promise<APIConfig> {
+  const [savedKey, savedStageApiKeysRaw] = await Promise.all([
+    secureGet(getProfileApiKeyStorageKey(profile.id)),
+    secureGet(getProfileStageApiKeysStorageKey(profile.id)),
+  ]);
+
+  return normalizeApiConfig({
+    provider: profile.provider,
+    providerLabel: profile.providerLabel || PROVIDER_DISPLAY_NAMES[profile.provider],
+    apiKey: savedKey || '',
+    model: profile.model,
+    baseUrl: profile.baseUrl || '',
+    stageModels: profile.stageModels,
+    stageAPIOverrides: normalizeStageAPIOverrides(profile.stageAPIOverrides, parseStageApiKeys(savedStageApiKeysRaw)),
+  });
+}
+
+async function persistApiConfigSecrets(profileId: string, config: APIConfig): Promise<void> {
+  const normalizedConfig = normalizeApiConfig(config);
+  const stageApiKeys = extractStageApiKeys(normalizedConfig.stageAPIOverrides);
+
+  if (normalizedConfig.apiKey) {
+    await secureSet(getProfileApiKeyStorageKey(profileId), normalizedConfig.apiKey);
+  } else {
+    secureRemove(getProfileApiKeyStorageKey(profileId));
+  }
+
+  if (Object.keys(stageApiKeys).length > 0) {
+    await secureSet(getProfileStageApiKeysStorageKey(profileId), JSON.stringify(stageApiKeys));
+  } else {
+    secureRemove(getProfileStageApiKeysStorageKey(profileId));
+  }
+}
+
+async function syncLegacyActiveApiConfig(config: APIConfig): Promise<void> {
+  const normalizedConfig = normalizeApiConfig(config);
+  const stageApiKeys = extractStageApiKeys(normalizedConfig.stageAPIOverrides);
+
+  if (normalizedConfig.apiKey) {
+    await secureSet('apiKey', normalizedConfig.apiKey);
+  } else {
+    secureRemove('apiKey');
+  }
+
+  if (Object.keys(stageApiKeys).length > 0) {
+    await secureSet('stageApiKeys', JSON.stringify(stageApiKeys));
+  } else {
+    secureRemove('stageApiKeys');
+  }
+
+  setJSON('provider', normalizedConfig.provider);
+  setJSON('providerLabel', normalizedConfig.providerLabel || '');
+  setJSON('model', normalizedConfig.model);
+  setJSON('baseUrl', normalizedConfig.baseUrl || '');
+  setJSON('stageModels', normalizedConfig.stageModels);
+  setJSON('stageAPIOverrides', serializeStageAPIOverrides(normalizedConfig.stageAPIOverrides));
+}
+
+function createProfileSummary(profile: StoredAPIProfile): APIProfileSummary {
+  return {
+    id: profile.id,
+    name: profile.name,
+    updatedAt: profile.updatedAt,
+  };
+}
+
+function ensureUniqueProfileName(
+  desiredName: string,
+  profiles: StoredAPIProfile[],
+  excludeProfileId?: string
+): string {
+  const baseName = desiredName.trim() || DEFAULT_API_PROFILE_NAME;
+  const takenNames = new Set(
+    profiles
+      .filter((profile) => profile.id !== excludeProfileId)
+      .map((profile) => profile.name.trim())
+  );
+
+  if (!takenNames.has(baseName)) {
+    return baseName;
+  }
+
+  let suffix = 2;
+  while (takenNames.has(`${baseName} ${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseName} ${suffix}`;
+}
+
+function canResolveStageAccess(
+  config: APIConfig,
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+): boolean {
+  return getEnabledRequestStages(orchestratorConfig).every((stage) => {
+    const stageConfig = resolveStageAPIConfig(config, stage);
+    return Boolean(stageConfig.apiKey.trim() && stageConfig.model.trim());
+  });
+}
+
+function hasRestorableTaskState(taskState: TaskState): boolean {
+  return taskState.status !== 'idle'
+    || taskState.currentStage !== 'idle'
+    || taskState.pageAnalyses.length > 0
+    || taskState.chunkSyntheses.length > 0
+    || taskState.novelSections.length > 0
+    || Boolean(taskState.fullNovel)
+    || Boolean(taskState.lastAIRequest);
+}
+
+function restoreImagesFromSnapshot(images: RestorableImageItem[]): ImageItem[] {
+  return images.map((image) => ({
+    id: image.id,
+    file: image.file,
+    previewUrl: createPreviewUrl(image.file),
+    processedBase64: image.processedBase64,
+    processedMime: image.processedMime,
+    status: image.status,
+    originalSize: image.originalSize,
+    compressedSize: image.compressedSize,
+  }));
+}
+
+function restoreTaskStateFromSnapshot(snapshot: PersistedTaskState, images: ImageItem[]): TaskState {
+  const imageById = new Map(images.map((image) => [image.id, image]));
+
+  return {
+    ...snapshot,
+    chunks: snapshot.chunks.map((chunk) => ({
+      ...chunk,
+      images: chunk.imageIds
+        .map((imageId) => imageById.get(imageId))
+        .filter((image): image is ImageItem => Boolean(image)),
+    })),
+  };
+}
+
+type RecoveryNoticeType = 'interrupted-task' | 'workspace-restored';
+
+interface RecoveryNotice {
+  type: RecoveryNoticeType;
+  title: string;
+  message: string;
+}
+
+function createRecoveryNotice(restoredImages: ImageItem[], restoredTaskState: TaskState | null): RecoveryNotice | null {
+  const hasRestoredImages = restoredImages.length > 0;
+  const hasRestoredTask = restoredTaskState ? hasRestorableTaskState(restoredTaskState) : false;
+
+  if (!hasRestoredImages && !hasRestoredTask) {
+    return null;
+  }
+
+  if (
+    restoredTaskState
+    && (restoredTaskState.status === 'paused' || restoredTaskState.lastAIRequest?.status === 'interrupted')
+  ) {
+    return {
+      type: 'interrupted-task',
+      title: '已恢复上次任务',
+      message: '页面刷新后，正在生成的请求已中断，但图片和进度已经保留。点击“继续”即可从当前进度恢复。',
+    };
+  }
+
+  if (hasRestoredTask) {
+    return {
+      type: 'workspace-restored',
+      title: '已恢复上次工作区',
+      message: '上次的图片和处理进度已经恢复，你可以继续查看结果，或直接从当前状态继续操作。',
+    };
+  }
+
+  return {
+    type: 'workspace-restored',
+    title: '已恢复上次图片',
+    message: '上次上传的图片已经恢复，可以直接继续配置或开始处理。',
+  };
 }
 
 export function useManga2Novel() {
   const orchestratorRef = useRef<TaskOrchestrator | null>(null);
+  const imageFilesSignatureRef = useRef('');
+  const imageFilesSaveTimerRef = useRef<number | null>(null);
+  const imageMetaSaveTimerRef = useRef<number | null>(null);
+  const taskStateSaveTimerRef = useRef<number | null>(null);
 
   if (!orchestratorRef.current) {
     orchestratorRef.current = new TaskOrchestrator();
@@ -58,13 +471,9 @@ export function useManga2Novel() {
 
   const orchestrator = orchestratorRef.current;
 
-  const [apiConfig, setApiConfigState] = useState<APIConfig>({
-    provider: 'openrouter',
-    apiKey: '',
-    model: '',
-    baseUrl: '',
-    stageModels: { ...DEFAULT_STAGE_MODELS },
-  });
+  const [apiConfig, setApiConfigState] = useState<APIConfig>(createEmptyApiConfig);
+  const [apiProfiles, setApiProfiles] = useState<StoredAPIProfile[]>([]);
+  const [activeApiProfileId, setActiveApiProfileIdState] = useState('');
   const [images, setImages] = useState<ImageItem[]>([]);
   const [creativePresets, setCreativePresets] = useState<CreativePreset[]>(CREATIVE_PRESETS);
   const [taskState, setTaskState] = useState<TaskState>({
@@ -79,6 +488,7 @@ export function useManga2Novel() {
       writingConstraints: [],
     },
     novelSections: [],
+    finalPolish: { ...DEFAULT_FINAL_POLISH },
     memory: { ...DEFAULT_MEMORY_STATE },
     config: { ...DEFAULT_ORCHESTRATOR_CONFIG },
     creativeSettings: {
@@ -91,13 +501,11 @@ export function useManga2Novel() {
     lastAIRequest: undefined,
   });
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<RecoveryNotice | null>(null);
 
   useEffect(() => {
     (async () => {
-      const savedKey = await secureGet('apiKey');
-      const savedModel = getJSON<string>('model');
-      const savedBaseUrl = getJSON<string>('baseUrl');
-      const savedStageModels = getJSON<APIConfig['stageModels']>('stageModels');
       const savedOrcConfig = getJSON<OrchestratorConfig>('orchestratorConfig');
       const savedCreativeSettings = getJSON<CreativeSettings>('creativeSettings');
       const savedCreativeSettingsTemplateVersion = getJSON<number>('creativeSettingsTemplateVersion');
@@ -108,15 +516,63 @@ export function useManga2Novel() {
         ...(savedCreativePresets?.filter((preset) => !CREATIVE_PRESETS.some((builtin) => builtin.id === preset.id)) || []),
       ];
 
-      const nextApiConfig: APIConfig = {
-        provider: 'openrouter',
-        apiKey: savedKey || '',
-        model: savedModel || '',
-        baseUrl: savedBaseUrl || '',
-        stageModels: { ...DEFAULT_STAGE_MODELS, ...(savedStageModels || {}) },
-      };
+      const storedProfiles = (getJSON<StoredAPIProfile[]>(API_PROFILES_STORAGE_KEY) || []).map((profile) => (
+        normalizeStoredApiProfile(profile)
+      ));
+      const savedActiveProfileId = getJSON<string>(ACTIVE_API_PROFILE_ID_STORAGE_KEY);
+      let nextProfiles = storedProfiles;
+      let nextActiveProfileId = savedActiveProfileId || storedProfiles[0]?.id || '';
+      let nextApiConfig = createEmptyApiConfig();
+
+      if (nextProfiles.length === 0) {
+        const [savedKey, savedStageApiKeysRaw] = await Promise.all([
+          secureGet('apiKey'),
+          secureGet('stageApiKeys'),
+        ]);
+        const savedProvider = getJSON<APIConfig['provider']>('provider');
+        const savedProviderLabel = getJSON<string>('providerLabel');
+        const savedModel = getJSON<string>('model');
+        const savedBaseUrl = getJSON<string>('baseUrl');
+        const savedStageModels = getJSON<APIConfig['stageModels']>('stageModels');
+        const savedStageAPIOverrides = getJSON<Partial<StageAPIOverrideMap>>('stageAPIOverrides');
+        const nextProvider = normalizeProvider(savedProvider as APIConfig['provider'] | 'openrouter' | null | undefined);
+        const legacyConfig = normalizeApiConfig({
+          provider: nextProvider,
+          providerLabel: normalizeProviderLabel({
+            provider: nextProvider,
+            providerLabel: savedProviderLabel || '',
+          }),
+          apiKey: savedKey || '',
+          model: savedModel || '',
+          baseUrl: normalizeBaseUrl(
+            nextProvider,
+            savedBaseUrl,
+            savedProvider as APIConfig['provider'] | 'openrouter' | null | undefined
+          ),
+          stageModels: { ...DEFAULT_STAGE_MODELS, ...(savedStageModels || {}) },
+          stageAPIOverrides: normalizeStageAPIOverrides(savedStageAPIOverrides, parseStageApiKeys(savedStageApiKeysRaw)),
+        });
+
+        const defaultProfile = buildStoredApiProfile(createApiProfileId(), DEFAULT_API_PROFILE_NAME, legacyConfig);
+        nextProfiles = [defaultProfile];
+        nextActiveProfileId = defaultProfile.id;
+        nextApiConfig = legacyConfig;
+
+        setJSON(API_PROFILES_STORAGE_KEY, nextProfiles);
+        setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextActiveProfileId);
+        await persistApiConfigSecrets(defaultProfile.id, legacyConfig);
+      } else {
+        const activeProfile = nextProfiles.find((profile) => profile.id === nextActiveProfileId) || nextProfiles[0];
+        nextActiveProfileId = activeProfile.id;
+        nextApiConfig = await loadApiConfigFromProfile(activeProfile);
+
+        setJSON(API_PROFILES_STORAGE_KEY, nextProfiles);
+        setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextActiveProfileId);
+      }
 
       setApiConfigState(nextApiConfig);
+      setApiProfiles(nextProfiles);
+      setActiveApiProfileIdState(nextActiveProfileId);
       setCreativePresets(nextPresets);
 
       if (savedOrcConfig) {
@@ -142,6 +598,7 @@ export function useManga2Novel() {
       }
 
       nextCreativeSettings.presetId = resolvePresetIdFromPresets(nextCreativeSettings.systemPrompt, nextPresets);
+      await syncLegacyActiveApiConfig(nextApiConfig);
       orchestrator.setAPIConfig(nextApiConfig);
       orchestrator.updateCreativeSettings(nextCreativeSettings);
 
@@ -157,34 +614,230 @@ export function useManga2Novel() {
   useEffect(() => {
     return orchestrator.on((event) => {
       setTaskState(event.state);
+      if (event.type === 'image-processed') {
+        setImages((prev) => [...prev]);
+      }
     });
   }, [orchestrator]);
 
-  const saveApiConfig = useCallback(async (config: APIConfig) => {
-    const normalizedConfig: APIConfig = {
-      provider: 'openrouter',
-      apiKey: config.apiKey.trim(),
-      model: config.model.trim(),
-      baseUrl: config.baseUrl?.trim() || '',
-      stageModels: REQUEST_STAGES.reduce((result, stage) => {
-        result[stage] = config.stageModels[stage]?.trim() || '';
-        return result;
-      }, { ...DEFAULT_STAGE_MODELS }),
-    };
-
-    setApiConfigState(normalizedConfig);
-    if (normalizedConfig.apiKey) {
-      await secureSet('apiKey', normalizedConfig.apiKey);
-    } else {
-      secureRemove('apiKey');
+  useEffect(() => {
+    if (!configLoaded || workspaceLoaded) {
+      return;
     }
 
-    setJSON('provider', normalizedConfig.provider);
-    setJSON('model', normalizedConfig.model);
-    setJSON('baseUrl', normalizedConfig.baseUrl || '');
-    setJSON('stageModels', normalizedConfig.stageModels);
+    let isCancelled = false;
+
+    (async () => {
+      try {
+        const snapshot = await loadWorkspaceSnapshot();
+        if (isCancelled || !snapshot) {
+          return;
+        }
+
+        const restoredImages = restoreImagesFromSnapshot(snapshot.images);
+        setImages(restoredImages);
+
+        let restoredTaskState: TaskState | null = null;
+        if (snapshot.taskState) {
+          restoredTaskState = restoreTaskStateFromSnapshot(snapshot.taskState, restoredImages);
+          orchestrator.restoreState(restoredTaskState);
+        }
+
+        setRecoveryNotice(createRecoveryNotice(restoredImages, restoredTaskState));
+      } finally {
+        if (!isCancelled) {
+          setWorkspaceLoaded(true);
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [configLoaded, orchestrator, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+
+    const workspaceEmpty = images.length === 0 && !hasRestorableTaskState(taskState);
+    if (!workspaceEmpty) {
+      return;
+    }
+
+    setRecoveryNotice(null);
+    void clearWorkspaceSnapshot();
+  }, [images.length, taskState, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+
+    const nextSignature = images.map((image) => `${image.id}:${image.file.name}:${image.file.size}`).join('|');
+    if (nextSignature === imageFilesSignatureRef.current) {
+      return;
+    }
+
+    imageFilesSignatureRef.current = nextSignature;
+
+    if (imageFilesSaveTimerRef.current !== null) {
+      window.clearTimeout(imageFilesSaveTimerRef.current);
+    }
+
+    imageFilesSaveTimerRef.current = window.setTimeout(() => {
+      void saveWorkspaceImageFiles(images);
+      imageFilesSaveTimerRef.current = null;
+    }, 100);
+
+    return () => {
+      if (imageFilesSaveTimerRef.current !== null) {
+        window.clearTimeout(imageFilesSaveTimerRef.current);
+        imageFilesSaveTimerRef.current = null;
+      }
+    };
+  }, [images, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+
+    if (imageMetaSaveTimerRef.current !== null) {
+      window.clearTimeout(imageMetaSaveTimerRef.current);
+    }
+
+    imageMetaSaveTimerRef.current = window.setTimeout(() => {
+      void saveWorkspaceImageMeta(serializeImages(images));
+      imageMetaSaveTimerRef.current = null;
+    }, 100);
+
+    return () => {
+      if (imageMetaSaveTimerRef.current !== null) {
+        window.clearTimeout(imageMetaSaveTimerRef.current);
+        imageMetaSaveTimerRef.current = null;
+      }
+    };
+  }, [images, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded || (images.length === 0 && !hasRestorableTaskState(taskState))) {
+      return;
+    }
+
+    if (taskStateSaveTimerRef.current !== null) {
+      window.clearTimeout(taskStateSaveTimerRef.current);
+    }
+
+    taskStateSaveTimerRef.current = window.setTimeout(() => {
+      void saveWorkspaceTaskState(hasRestorableTaskState(taskState) ? serializeTaskState(taskState) : null);
+      taskStateSaveTimerRef.current = null;
+    }, 100);
+
+    return () => {
+      if (taskStateSaveTimerRef.current !== null) {
+        window.clearTimeout(taskStateSaveTimerRef.current);
+        taskStateSaveTimerRef.current = null;
+      }
+    };
+  }, [images.length, taskState, workspaceLoaded]);
+
+  const saveApiConfig = useCallback(async (
+    config: APIConfig,
+    options?: { profileName?: string }
+  ) => {
+    const normalizedConfig = normalizeApiConfig(config);
+    const fallbackProfile = buildStoredApiProfile(createApiProfileId(), DEFAULT_API_PROFILE_NAME, normalizedConfig);
+    const currentProfile = apiProfiles.find((profile) => profile.id === activeApiProfileId) || fallbackProfile;
+    const nextProfile = buildStoredApiProfile(
+      currentProfile.id,
+      ensureUniqueProfileName(options?.profileName || currentProfile.name, apiProfiles, currentProfile.id),
+      normalizedConfig
+    );
+    const nextProfiles = apiProfiles.some((profile) => profile.id === currentProfile.id)
+      ? apiProfiles.map((profile) => (profile.id === currentProfile.id ? nextProfile : profile))
+      : [...apiProfiles, nextProfile];
+
+    setApiConfigState(normalizedConfig);
+    setApiProfiles(nextProfiles);
+    setActiveApiProfileIdState(nextProfile.id);
+    setJSON(API_PROFILES_STORAGE_KEY, nextProfiles);
+    setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextProfile.id);
+    await persistApiConfigSecrets(nextProfile.id, normalizedConfig);
+    await syncLegacyActiveApiConfig(normalizedConfig);
     orchestrator.setAPIConfig(normalizedConfig);
-  }, [orchestrator]);
+  }, [activeApiProfileId, apiProfiles, orchestrator]);
+
+  const selectApiProfile = useCallback(async (profileId: string) => {
+    const nextProfile = apiProfiles.find((profile) => profile.id === profileId);
+    if (!nextProfile) {
+      throw new Error('未找到要切换的 API 配置档');
+    }
+
+    const nextConfig = await loadApiConfigFromProfile(nextProfile);
+    setApiConfigState(nextConfig);
+    setActiveApiProfileIdState(nextProfile.id);
+    setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextProfile.id);
+    await syncLegacyActiveApiConfig(nextConfig);
+    orchestrator.setAPIConfig(nextConfig);
+  }, [apiProfiles, orchestrator]);
+
+  const duplicateApiProfile = useCallback(async (
+    config: APIConfig,
+    profileName?: string
+  ) => {
+    const normalizedConfig = normalizeApiConfig(config);
+    const nextProfileId = createApiProfileId();
+    const nextProfile = buildStoredApiProfile(
+      nextProfileId,
+      ensureUniqueProfileName(profileName || `${DEFAULT_API_PROFILE_NAME} 副本`, apiProfiles),
+      normalizedConfig
+    );
+    const nextProfiles = [...apiProfiles, nextProfile];
+
+    setApiProfiles(nextProfiles);
+    setApiConfigState(normalizedConfig);
+    setActiveApiProfileIdState(nextProfileId);
+    setJSON(API_PROFILES_STORAGE_KEY, nextProfiles);
+    setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextProfileId);
+    await persistApiConfigSecrets(nextProfileId, normalizedConfig);
+    await syncLegacyActiveApiConfig(normalizedConfig);
+    orchestrator.setAPIConfig(normalizedConfig);
+  }, [apiProfiles, orchestrator]);
+
+  const deleteApiProfile = useCallback(async (profileId: string) => {
+    if (apiProfiles.length <= 1) {
+      throw new Error('至少保留一个 API 配置档');
+    }
+
+    const remainingProfiles = apiProfiles.filter((profile) => profile.id !== profileId);
+    const nextActiveProfile = profileId === activeApiProfileId
+      ? remainingProfiles[0]
+      : remainingProfiles.find((profile) => profile.id === activeApiProfileId) || remainingProfiles[0];
+
+    setApiProfiles(remainingProfiles);
+    setJSON(API_PROFILES_STORAGE_KEY, remainingProfiles);
+    secureRemove(getProfileApiKeyStorageKey(profileId));
+    secureRemove(getProfileStageApiKeysStorageKey(profileId));
+
+    if (!nextActiveProfile) {
+      return;
+    }
+
+    const nextConfig = profileId === activeApiProfileId
+      ? await loadApiConfigFromProfile(nextActiveProfile)
+      : apiConfig;
+
+    setActiveApiProfileIdState(nextActiveProfile.id);
+    setJSON(ACTIVE_API_PROFILE_ID_STORAGE_KEY, nextActiveProfile.id);
+
+    if (profileId === activeApiProfileId) {
+      setApiConfigState(nextConfig);
+      await syncLegacyActiveApiConfig(nextConfig);
+      orchestrator.setAPIConfig(nextConfig);
+    }
+  }, [activeApiProfileId, apiConfig, apiProfiles, orchestrator]);
 
   const saveOrchestratorConfig = useCallback((config: Partial<OrchestratorConfig>) => {
     orchestrator.updateConfig(config);
@@ -193,7 +846,7 @@ export function useManga2Novel() {
     setTaskState(orchestrator.getState());
   }, [orchestrator]);
 
-  const fetchModels = useCallback(async (config: Pick<APIConfig, 'provider' | 'apiKey' | 'baseUrl'>) => {
+  const fetchModels = useCallback(async (config: Pick<APIConfig, 'provider' | 'providerLabel' | 'apiKey' | 'baseUrl'>) => {
     return fetchProviderModels(config);
   }, []);
 
@@ -323,41 +976,90 @@ export function useManga2Novel() {
     setImages([]);
   }, [images]);
 
-  const startProcessing = useCallback(async () => {
-    if (!apiConfig.apiKey) {
+  const dismissRecoveryNotice = useCallback(() => {
+    setRecoveryNotice(null);
+  }, []);
+
+const startProcessing = useCallback(async () => {
+    const enabledStages = getEnabledRequestStages(taskState.config);
+
+    if (!canResolveStageAccess(apiConfig, taskState.config)) {
+      throw new Error('请先补全各阶段可用的 API Key 和模型。独立接口阶段可以填自己的 Key / 模型，其余阶段会沿用默认接口。');
+    }
+    if (!apiConfig.apiKey && !enabledStages.some((stage) => apiConfig.stageAPIOverrides[stage].enabled)) {
       throw new Error('请先配置 API Key');
     }
-    if (!canResolveModels(apiConfig)) {
-      throw new Error('请至少填写主模型，或为四个阶段分别配置模型');
+    if (!canResolveModels(apiConfig, taskState.config)) {
+      throw new Error('请至少填写主模型，或为各阶段分别配置模型');
     }
 
+    setRecoveryNotice(null);
     orchestrator.setAPIConfig(apiConfig);
     await orchestrator.prepare(images);
     setImages([...images]);
     await orchestrator.run();
-  }, [apiConfig, images, orchestrator]);
+  }, [apiConfig, images, orchestrator, taskState.config]);
 
   const pause = useCallback(() => {
     orchestrator.pause();
   }, [orchestrator]);
 
   const resume = useCallback(async () => {
+    setRecoveryNotice(null);
     await orchestrator.resume();
   }, [orchestrator]);
 
   const skipCurrent = useCallback(async () => {
+    setRecoveryNotice(null);
     await orchestrator.skipAndContinue();
   }, [orchestrator]);
 
   const retryCurrent = useCallback(async () => {
+    setRecoveryNotice(null);
     await orchestrator.retryCurrentAndContinue();
   }, [orchestrator]);
 
-  const rerunFailed = useCallback(async () => {
-    await orchestrator.rerunFailedAndContinue();
+  const reanalyzePage = useCallback(async (pageIndex: number) => {
+    return orchestrator.reanalyzePageAndPause(pageIndex);
+  }, [orchestrator]);
+
+  const regenerateChunk = useCallback(async (chunkIndex: number) => {
+    return orchestrator.regenerateChunkAndPause(chunkIndex);
+  }, [orchestrator]);
+
+  const regenerateStory = useCallback(async () => {
+    return orchestrator.regenerateStoryAndPause();
+  }, [orchestrator]);
+
+  const regenerateSection = useCallback(async (sectionIndex: number) => {
+    return orchestrator.regenerateSectionAndPause(sectionIndex);
+  }, [orchestrator]);
+
+  const regenerateFinalPolish = useCallback(async () => {
+    return orchestrator.regenerateFinalPolishAndPause();
+  }, [orchestrator]);
+
+  const updateSceneOutline = useCallback((sceneOutline: ScenePlan[]) => {
+    orchestrator.updateSceneOutline(sceneOutline);
+    const currentState = orchestrator.getState();
+    setTaskState(currentState);
+  }, [orchestrator]);
+
+  const confirmSceneOutline = useCallback(() => {
+    orchestrator.confirmSceneOutline();
+    const currentState = orchestrator.getState();
+    setTaskState(currentState);
+  }, [orchestrator]);
+
+  const confirmSceneOutlineAndResume = useCallback(async () => {
+    setRecoveryNotice(null);
+    orchestrator.confirmSceneOutline();
+    setTaskState(orchestrator.getState());
+    await orchestrator.resume();
   }, [orchestrator]);
 
   const reset = useCallback(() => {
+    setRecoveryNotice(null);
     orchestrator.reset();
   }, [orchestrator]);
 
@@ -379,11 +1081,17 @@ export function useManga2Novel() {
 
   return {
     apiConfig,
+    apiProfiles: apiProfiles.map(createProfileSummary),
+    activeApiProfileId,
     creativePresets,
     images,
     taskState,
     configLoaded,
+    recoveryNotice,
     saveApiConfig,
+    selectApiProfile,
+    duplicateApiProfile,
+    deleteApiProfile,
     saveCreativePreset,
     deleteCreativePreset,
     saveOrchestratorConfig,
@@ -399,7 +1107,15 @@ export function useManga2Novel() {
     resume,
     skipCurrent,
     retryCurrent,
-    rerunFailed,
+    reanalyzePage,
+    regenerateChunk,
+    regenerateStory,
+    regenerateSection,
+    regenerateFinalPolish,
+    updateSceneOutline,
+    confirmSceneOutline,
+    confirmSceneOutlineAndResume,
+    dismissRecoveryNotice,
     reset,
     exportNovel,
   };

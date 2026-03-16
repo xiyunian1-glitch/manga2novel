@@ -18,5 +18,5 @@ if exist ".codex-preview.log" del /f /q ".codex-preview.log"
 
 start "" /b cmd /c "python -m http.server 3001 --bind 127.0.0.1 > .codex-preview.log 2>&1"
 
-echo Local API proxy is starting on http://127.0.0.1:8787/proxy
+echo Local API proxy is starting on http://127.0.0.1:8787-8797/proxy
 echo Manga2Novel preview server is starting on http://127.0.0.1:3001/manga2novel/

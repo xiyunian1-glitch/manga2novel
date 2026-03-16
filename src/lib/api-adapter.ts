@@ -1,4 +1,9 @@
 import type { AIResponse, APIConfig, ModelOption } from './types';
+import {
+  DEFAULT_COMPATIBLE_BASE_URL,
+  LEGACY_OPENROUTER_BASE_URL,
+  PROVIDER_DISPLAY_NAMES,
+} from './types';
 
 export interface ImagePayload {
   base64: string;
@@ -13,22 +18,51 @@ export interface GenerationOptions {
   responseMimeType?: 'application/json' | 'text/plain';
 }
 
-type OpenRouterModelResponse = {
+export interface LocalProxyStatus {
+  isLocalSession: boolean;
+  available: boolean;
+  endpoint: string | null;
+  port: number | null;
+}
+
+type CompatibleModelResponse = {
   data?: Array<{
     id?: string;
     name?: string;
   }>;
 };
 
-type OpenRouterChatCompletionResponse = {
+type CompatibleChatCompletionResponse = {
+  error?: {
+    message?: string;
+    type?: string;
+    code?: string;
+  };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   choices?: Array<{
     finish_reason?: string;
+    text?: string;
     message?: {
-      content?: string;
+      content?: string | Array<{
+        type?: string;
+        text?: string;
+        content?: string;
+      }>;
       reasoning_content?: string;
+      refusal?: string;
     };
   }>;
 };
+
+type CompatibleMessageContent = NonNullable<
+  NonNullable<NonNullable<CompatibleChatCompletionResponse['choices']>[number]['message']>['content']
+>;
+
+type CompatibleChoice = NonNullable<CompatibleChatCompletionResponse['choices']>[number];
 
 type GeminiModelResponse = {
   models?: Array<{
@@ -38,7 +72,83 @@ type GeminiModelResponse = {
   }>;
 };
 
-const LOCAL_PROXY_ENDPOINT = 'http://127.0.0.1:8787/proxy';
+const LOCAL_PROXY_HOST = '127.0.0.1';
+const LOCAL_PROXY_PORT_START = 8787;
+const LOCAL_PROXY_PORT_END = 8797;
+const LOCAL_PROXY_STORAGE_KEY = 'm2n_local_proxy_endpoint';
+let cachedLocalProxyEndpoint: string | null = null;
+
+function getLocalProxyEndpoint(port: number): string {
+  return `http://${LOCAL_PROXY_HOST}:${port}/proxy`;
+}
+
+function getLocalProxyHealthEndpoint(proxyEndpoint: string): string {
+  return proxyEndpoint.replace(/\/proxy$/, '/health');
+}
+
+function getLocalProxyPortRangeLabel(): string {
+  return `${LOCAL_PROXY_PORT_START}-${LOCAL_PROXY_PORT_END}`;
+}
+
+export function getLocalProxyStatusLabelRange(): string {
+  return getLocalProxyPortRangeLabel();
+}
+
+function readRememberedLocalProxyEndpoint(): string | null {
+  if (cachedLocalProxyEndpoint) {
+    return cachedLocalProxyEndpoint;
+  }
+
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const stored = window.localStorage.getItem(LOCAL_PROXY_STORAGE_KEY)?.trim() || '';
+  if (!stored) {
+    return null;
+  }
+
+  cachedLocalProxyEndpoint = stored;
+  return stored;
+}
+
+function rememberLocalProxyEndpoint(proxyEndpoint: string): void {
+  cachedLocalProxyEndpoint = proxyEndpoint;
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(LOCAL_PROXY_STORAGE_KEY, proxyEndpoint);
+  }
+}
+
+function clearRememberedLocalProxyEndpoint(proxyEndpoint?: string): void {
+  if (!proxyEndpoint || cachedLocalProxyEndpoint === proxyEndpoint) {
+    cachedLocalProxyEndpoint = null;
+  }
+
+  if (typeof window !== 'undefined') {
+    const stored = window.localStorage.getItem(LOCAL_PROXY_STORAGE_KEY);
+    if (!proxyEndpoint || stored === proxyEndpoint) {
+      window.localStorage.removeItem(LOCAL_PROXY_STORAGE_KEY);
+    }
+  }
+}
+
+function getLocalProxyCandidateEndpoints(): string[] {
+  const remembered = readRememberedLocalProxyEndpoint();
+  const endpoints = [];
+
+  if (remembered) {
+    endpoints.push(remembered);
+  }
+
+  for (let port = LOCAL_PROXY_PORT_START; port <= LOCAL_PROXY_PORT_END; port += 1) {
+    const endpoint = getLocalProxyEndpoint(port);
+    if (endpoint !== remembered) {
+      endpoints.push(endpoint);
+    }
+  }
+
+  return endpoints;
+}
 
 function normalizeBaseUrl(baseUrl: string | undefined, fallback: string): string {
   const candidate = (baseUrl || fallback).trim();
@@ -46,10 +156,36 @@ function normalizeBaseUrl(baseUrl: string | undefined, fallback: string): string
 }
 
 function getProviderBaseUrl(config: Pick<APIConfig, 'provider' | 'baseUrl'>): string {
-  if (config.provider === 'openrouter') {
-    return normalizeBaseUrl(config.baseUrl, 'https://openrouter.ai/api/v1');
+  if (config.provider === 'compatible') {
+    return normalizeBaseUrl(config.baseUrl, DEFAULT_COMPATIBLE_BASE_URL);
   }
   return normalizeBaseUrl(config.baseUrl, 'https://generativelanguage.googleapis.com/v1beta');
+}
+
+function getProviderDisplayName(config: Pick<APIConfig, 'provider' | 'providerLabel'>): string {
+  return config.providerLabel?.trim() || PROVIDER_DISPLAY_NAMES[config.provider];
+}
+
+function usesOpenRouterHeaders(url: string): boolean {
+  try {
+    return new URL(url).origin === new URL(LEGACY_OPENROUTER_BASE_URL).origin;
+  } catch {
+    return false;
+  }
+}
+
+function getCompatibleHeaders(apiKey: string, url: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+
+  if (typeof window !== 'undefined' && usesOpenRouterHeaders(url)) {
+    headers['HTTP-Referer'] = window.location.origin;
+    headers['X-Title'] = 'Manga2Novel';
+  }
+
+  return headers;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -98,7 +234,7 @@ function shouldAttemptLocalProxy(url: string): boolean {
 
   try {
     const target = new URL(url);
-    return target.origin !== LOCAL_PROXY_ENDPOINT.replace(/\/proxy$/, '')
+    return target.hostname !== LOCAL_PROXY_HOST
       && target.hostname !== '127.0.0.1'
       && target.hostname !== 'localhost';
   } catch {
@@ -133,8 +269,8 @@ function formatProxyFetchFailure(context: string, url: string, directError: unkn
 
   return new Error(
     `${context}: direct browser request could not reach ${sanitizedUrl}${directReason}. `
-    + `A local fallback proxy at ${LOCAL_PROXY_ENDPOINT} was also unreachable${proxyReason}. `
-    + 'The request never reached the upstream model. Start scripts/run-local-dev.cmd or scripts/run-local-preview.cmd to launch the built-in proxy, or check whether port 8787 is blocked.'
+    + `A local fallback proxy in the port range ${LOCAL_PROXY_HOST}:${getLocalProxyPortRangeLabel()} was also unreachable${proxyReason}. `
+    + `The request never reached the upstream model. Start scripts/run-local-dev.cmd or scripts/run-local-preview.cmd to launch the built-in proxy, or check whether local ports ${getLocalProxyPortRangeLabel()} are blocked.`
   );
 }
 
@@ -147,7 +283,122 @@ function withLocalProxyHeaders(url: string, init: RequestInit): RequestInit {
   };
 }
 
+async function isAvailableLocalProxyEndpoint(proxyEndpoint: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), 500);
+
+  try {
+    const response = await fetch(getLocalProxyHealthEndpoint(proxyEndpoint), {
+      method: 'GET',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return false;
+    }
+
+    if (response.headers.get('X-Manga2Novel-Proxy') === '1') {
+      return true;
+    }
+
+    // Some browsers hide custom response headers across origins unless they are explicitly exposed.
+    const payload = await response.json().catch(() => null) as { ok?: boolean } | null;
+    return payload?.ok === true;
+  } catch {
+    return false;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+function extractPortFromProxyEndpoint(proxyEndpoint: string | null): number | null {
+  if (!proxyEndpoint) {
+    return null;
+  }
+
+  try {
+    return Number(new URL(proxyEndpoint).port);
+  } catch {
+    return null;
+  }
+}
+
+export async function detectLocalProxyStatus(): Promise<LocalProxyStatus> {
+  if (!isLocalBrowserSession()) {
+    return {
+      isLocalSession: false,
+      available: false,
+      endpoint: null,
+      port: null,
+    };
+  }
+
+  for (const proxyEndpoint of getLocalProxyCandidateEndpoints()) {
+    const isAvailable = await isAvailableLocalProxyEndpoint(proxyEndpoint);
+    if (!isAvailable) {
+      clearRememberedLocalProxyEndpoint(proxyEndpoint);
+      continue;
+    }
+
+    rememberLocalProxyEndpoint(proxyEndpoint);
+    return {
+      isLocalSession: true,
+      available: true,
+      endpoint: proxyEndpoint,
+      port: extractPortFromProxyEndpoint(proxyEndpoint),
+    };
+  }
+
+  return {
+    isLocalSession: true,
+    available: false,
+    endpoint: null,
+    port: null,
+  };
+}
+
+async function tryFetchViaLocalProxy(url: string, init: RequestInit): Promise<Response | null> {
+  for (const proxyEndpoint of getLocalProxyCandidateEndpoints()) {
+    const isAvailable = await isAvailableLocalProxyEndpoint(proxyEndpoint);
+    if (!isAvailable) {
+      clearRememberedLocalProxyEndpoint(proxyEndpoint);
+      continue;
+    }
+
+    try {
+      const response = await fetch(proxyEndpoint, withLocalProxyHeaders(url, init));
+      rememberLocalProxyEndpoint(proxyEndpoint);
+      return response;
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      clearRememberedLocalProxyEndpoint(proxyEndpoint);
+    }
+  }
+
+  return null;
+}
+
 async function fetchWithDiagnostics(url: string, init: RequestInit, context: string): Promise<Response> {
+  let lastProxyError: Error | null = null;
+
+  if (shouldAttemptLocalProxy(url)) {
+    try {
+      const proxiedResponse = await tryFetchViaLocalProxy(url, init);
+      if (proxiedResponse) {
+        return proxiedResponse;
+      }
+    } catch (proxyError) {
+      if (isAbortError(proxyError)) {
+        throw proxyError;
+      }
+
+      lastProxyError = proxyError instanceof Error ? proxyError : new Error(String(proxyError));
+    }
+  }
+
   try {
     return await fetch(url, init);
   } catch (directError) {
@@ -156,15 +407,7 @@ async function fetchWithDiagnostics(url: string, init: RequestInit, context: str
     }
 
     if (shouldAttemptLocalProxy(url)) {
-      try {
-        return await fetch(LOCAL_PROXY_ENDPOINT, withLocalProxyHeaders(url, init));
-      } catch (proxyError) {
-        if (isAbortError(proxyError)) {
-          throw proxyError;
-        }
-
-        throw formatProxyFetchFailure(context, url, directError, proxyError);
-      }
+      throw formatProxyFetchFailure(context, url, directError, lastProxyError);
     }
 
     throw formatFetchFailure(context, url, directError);
@@ -202,6 +445,158 @@ function getWrappedProviderError(text: string): string | null {
 
 function isLengthTruncatedCompletion(finishReason: string | undefined): boolean {
   return String(finishReason || '').trim().toLowerCase() === 'length';
+}
+
+function extractCompatibleContentText(content: CompatibleMessageContent | undefined): string {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') {
+        return '';
+      }
+
+      if (typeof part.text === 'string' && part.text.trim()) {
+        return part.text.trim();
+      }
+
+      if (typeof part.content === 'string' && part.content.trim()) {
+        return part.content.trim();
+      }
+
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function extractCompatibleChoiceText(choice: CompatibleChoice | undefined): string {
+  const messageContent = extractCompatibleContentText(choice?.message?.content);
+  if (messageContent) {
+    return messageContent;
+  }
+
+  if (typeof choice?.text === 'string' && choice.text.trim()) {
+    return choice.text.trim();
+  }
+
+  if (typeof choice?.message?.refusal === 'string' && choice.message.refusal.trim()) {
+    return choice.message.refusal.trim();
+  }
+
+  return '';
+}
+
+function buildCompatibleEmptyCompletionError(
+  providerDisplayName: string,
+  data: CompatibleChatCompletionResponse,
+  options: GenerationOptions,
+  extraDiagnostics: string[] = []
+): Error {
+  const choice = data.choices?.[0];
+  const finishReason = String(choice?.finish_reason || '').trim() || 'unknown';
+  const promptTokens = data.usage?.prompt_tokens;
+  const completionTokens = data.usage?.completion_tokens;
+  const diagnostics = [`finish_reason=${finishReason}`, ...extraDiagnostics];
+
+  if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
+    diagnostics.push(`prompt_tokens=${promptTokens}`);
+  }
+
+  if (typeof completionTokens === 'number' && Number.isFinite(completionTokens)) {
+    diagnostics.push(`completion_tokens=${completionTokens}`);
+  }
+
+  if (typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.trim()) {
+    diagnostics.push(`reasoning_content_length=${choice.message.reasoning_content.length}`);
+  }
+
+  const likelyBlockedHint = finishReason === 'stop' && completionTokens === 0
+    ? ' The upstream model may have blocked or discarded the response.'
+    : '';
+
+  return new Error(
+    `${providerDisplayName} returned an empty completion (${diagnostics.join(', ')}) at max_tokens=${options.maxOutputTokens ?? 4096}.${likelyBlockedHint}`
+  );
+}
+
+function isMarkdownFenceOnlyPlaceholder(text: string): boolean {
+  const normalized = normalizeModelText(text).toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  return /^```+(?:\s*(?:json|jsonc|javascript|js|typescript|ts)?)?\s*$/.test(normalized)
+    || /^```+(?:\s*(?:json|jsonc|javascript|js|typescript|ts)?)?\s*```+\s*$/.test(normalized);
+}
+
+function buildCompatibleChatCompletionRequestBody(
+  config: APIConfig,
+  imageContents: Array<{
+    type: 'image_url';
+    image_url: {
+      url: string;
+    };
+  }>,
+  options: GenerationOptions,
+  includeResponseFormat: boolean
+): string {
+  return JSON.stringify({
+    model: config.model,
+    messages: [
+      { role: 'system', content: options.systemPrompt },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: options.userPrompt },
+          ...imageContents,
+        ],
+      },
+    ],
+    temperature: options.temperature,
+    max_tokens: options.maxOutputTokens ?? 4096,
+    ...(includeResponseFormat && options.responseMimeType === 'application/json'
+      ? {
+          response_format: { type: 'json_object' },
+        }
+      : {}),
+  });
+}
+
+async function requestCompatibleChatCompletion(
+  config: APIConfig,
+  imageContents: Array<{
+    type: 'image_url';
+    image_url: {
+      url: string;
+    };
+  }>,
+  options: GenerationOptions,
+  signal: AbortSignal | undefined,
+  includeResponseFormat: boolean
+): Promise<CompatibleChatCompletionResponse> {
+  const providerDisplayName = getProviderDisplayName(config);
+  const url = `${getProviderBaseUrl(config)}/chat/completions`;
+  const response = await fetchWithDiagnostics(url, {
+    method: 'POST',
+    headers: getCompatibleHeaders(config.apiKey, url),
+    signal,
+    body: buildCompatibleChatCompletionRequestBody(config, imageContents, options, includeResponseFormat),
+  }, `${providerDisplayName} request failed`);
+
+  return parseJsonResponse<CompatibleChatCompletionResponse>(
+    response,
+    `${providerDisplayName} request failed`,
+    'response was not valid JSON'
+  );
 }
 
 async function parseJsonResponse<T>(
@@ -477,54 +872,57 @@ function parseAIResponse(rawText: string): AIResponse {
   };
 }
 
-async function fetchOpenRouterModels(apiKey: string, baseUrl?: string): Promise<ModelOption[]> {
+async function fetchCompatibleModels(
+  apiKey: string,
+  baseUrl?: string,
+  providerLabel = PROVIDER_DISPLAY_NAMES.compatible
+): Promise<ModelOption[]> {
   if (!apiKey) {
-    throw new Error('OpenRouter requires an API key before fetching models.');
+    throw new Error(`${providerLabel} requires an API key before fetching models.`);
   }
 
-  const url = `${normalizeBaseUrl(baseUrl, 'https://openrouter.ai/api/v1')}/models`;
+  const url = `${normalizeBaseUrl(baseUrl, DEFAULT_COMPATIBLE_BASE_URL)}/models`;
   const response = await fetchWithDiagnostics(url, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'Manga2Novel',
-    },
-  }, 'Failed to fetch OpenRouter models');
+    headers: getCompatibleHeaders(apiKey, url),
+  }, `Failed to fetch ${providerLabel} models`);
 
-  const data = await parseJsonResponse<OpenRouterModelResponse>(
+  const data = await parseJsonResponse<CompatibleModelResponse>(
     response,
-    'Failed to fetch OpenRouter models',
+    `Failed to fetch ${providerLabel} models`,
     'response was not valid JSON'
   );
 
   const models = Array.isArray(data.data)
     ? data.data
-        .filter((item) => item?.id)
-        .map((item) => ({
-          id: String(item.id),
-          name: String(item.name || item.id),
-        }))
+      .filter((item) => item?.id)
+      .map((item) => ({
+        id: String(item.id),
+        name: String(item.name || item.id),
+      }))
     : [];
 
   return dedupeModels(models);
 }
 
-async function fetchGeminiModels(apiKey: string, baseUrl?: string): Promise<ModelOption[]> {
+async function fetchGeminiModels(
+  apiKey: string,
+  baseUrl?: string,
+  providerLabel = PROVIDER_DISPLAY_NAMES.gemini
+): Promise<ModelOption[]> {
   if (!apiKey) {
-    throw new Error('Gemini requires an API key before fetching models.');
+    throw new Error(`${providerLabel} requires an API key before fetching models.`);
   }
 
   const url = `${normalizeBaseUrl(baseUrl, 'https://generativelanguage.googleapis.com/v1beta')}/models?key=${apiKey}`;
   const response = await fetchWithDiagnostics(url, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
-  }, 'Failed to fetch Gemini models');
+  }, `Failed to fetch ${providerLabel} models`);
 
   const data = await parseJsonResponse<GeminiModelResponse>(
     response,
-    'Failed to fetch Gemini models',
+    `Failed to fetch ${providerLabel} models`,
     'response was not valid JSON'
   );
 
@@ -549,84 +947,90 @@ async function fetchGeminiModels(apiKey: string, baseUrl?: string): Promise<Mode
   return dedupeModels(models);
 }
 
-export async function fetchModels(config: Pick<APIConfig, 'provider' | 'apiKey' | 'baseUrl'>): Promise<ModelOption[]> {
+export async function fetchModels(
+  config: Pick<APIConfig, 'provider' | 'providerLabel' | 'apiKey' | 'baseUrl'>
+): Promise<ModelOption[]> {
   switch (config.provider) {
-    case 'openrouter':
-      return fetchOpenRouterModels(config.apiKey, config.baseUrl);
+    case 'compatible':
+      return fetchCompatibleModels(config.apiKey, config.baseUrl, config.providerLabel);
     case 'gemini':
-      return fetchGeminiModels(config.apiKey, config.baseUrl);
+      return fetchGeminiModels(config.apiKey, config.baseUrl, config.providerLabel);
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);
   }
 }
 
-async function callOpenRouterText(
+async function callCompatibleText(
   config: APIConfig,
   images: ImagePayload[],
   options: GenerationOptions,
   signal?: AbortSignal
 ): Promise<string> {
+  const providerDisplayName = getProviderDisplayName(config);
   const imageContents = images.map((img) => ({
     type: 'image_url' as const,
     image_url: { url: `data:${img.mime};base64,${img.base64}` },
   }));
 
-  const url = `${getProviderBaseUrl(config)}/chat/completions`;
-  const response = await fetchWithDiagnostics(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'Manga2Novel',
-    },
-    signal,
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: options.systemPrompt },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: options.userPrompt },
-            ...imageContents,
-          ],
-        },
-      ],
-      temperature: options.temperature,
-      max_tokens: options.maxOutputTokens ?? 4096,
-    }),
-  }, 'OpenRouter request failed');
+  const requestText = async (includeResponseFormat: boolean): Promise<string> => {
+    const data = await requestCompatibleChatCompletion(
+      config,
+      imageContents,
+      options,
+      signal,
+      includeResponseFormat
+    );
 
-  const data = await parseJsonResponse<OpenRouterChatCompletionResponse>(
-    response,
-    'OpenRouter request failed',
-    'response was not valid JSON'
-  );
+    if (typeof data.error?.message === 'string' && data.error.message.trim()) {
+      const codeSuffix = data.error.code?.trim() ? ` (code=${data.error.code.trim()})` : '';
+      throw new Error(`${data.error.message.trim()}${codeSuffix}`);
+    }
 
-  const choice = data.choices?.[0];
-  const rawText = choice?.message?.content;
-  if (!rawText) {
-    if (isLengthTruncatedCompletion(choice?.finish_reason)) {
-      throw new Error(
-        `OpenRouter truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
+    const choice = data.choices?.[0];
+    const rawText = extractCompatibleChoiceText(choice);
+    const canRetryWithoutResponseFormat = includeResponseFormat && options.responseMimeType === 'application/json';
+
+    if (!rawText) {
+      if (canRetryWithoutResponseFormat) {
+        return requestText(false);
+      }
+
+      if (isLengthTruncatedCompletion(choice?.finish_reason)) {
+        throw new Error(
+          `${providerDisplayName} truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
+        );
+      }
+      throw buildCompatibleEmptyCompletionError(providerDisplayName, data, options);
+    }
+
+    if (isMarkdownFenceOnlyPlaceholder(rawText)) {
+      if (canRetryWithoutResponseFormat) {
+        return requestText(false);
+      }
+
+      throw buildCompatibleEmptyCompletionError(
+        providerDisplayName,
+        data,
+        options,
+        ['content=markdown_fence_only']
       );
     }
-    throw new Error('OpenRouter returned an empty completion.');
-  }
 
-  const wrappedProviderError = getWrappedProviderError(rawText);
-  if (wrappedProviderError) {
-    throw new Error(wrappedProviderError);
-  }
+    const wrappedProviderError = getWrappedProviderError(rawText);
+    if (wrappedProviderError) {
+      throw new Error(wrappedProviderError);
+    }
 
-  if (isLengthTruncatedCompletion(choice?.finish_reason)) {
-    throw new Error(
-      `OpenRouter truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
-    );
-  }
+    if (isLengthTruncatedCompletion(choice?.finish_reason)) {
+      throw new Error(
+        `${providerDisplayName} truncated the completion because finish_reason=length at max_tokens=${options.maxOutputTokens ?? 4096}.`
+      );
+    }
 
-  return rawText;
+    return rawText;
+  };
+
+  return requestText(options.responseMimeType === 'application/json');
 }
 
 async function callGeminiText(
@@ -635,6 +1039,7 @@ async function callGeminiText(
   options: GenerationOptions,
   signal?: AbortSignal
 ): Promise<string> {
+  const providerDisplayName = getProviderDisplayName(config);
   const imageParts = images.map((img) => ({
     inlineData: { mimeType: img.mime, data: img.base64 },
   }));
@@ -663,7 +1068,7 @@ async function callGeminiText(
       ],
       generationConfig,
     }),
-  }, 'Gemini request failed');
+  }, `${providerDisplayName} request failed`);
 
   const data = await parseJsonResponse<{
     candidates?: Array<{
@@ -675,13 +1080,13 @@ async function callGeminiText(
     }>;
   }>(
     response,
-    'Gemini request failed',
+    `${providerDisplayName} request failed`,
     'response was not valid JSON'
   );
 
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!rawText) {
-    throw new Error('Gemini returned an empty completion.');
+    throw new Error(`${providerDisplayName} returned an empty completion.`);
   }
 
   const wrappedProviderError = getWrappedProviderError(rawText);
@@ -699,8 +1104,8 @@ export async function callAIText(
   signal?: AbortSignal
 ): Promise<string> {
   switch (config.provider) {
-    case 'openrouter':
-      return callOpenRouterText(config, images, options, signal);
+    case 'compatible':
+      return callCompatibleText(config, images, options, signal);
     case 'gemini':
       return callGeminiText(config, images, options, signal);
     default:

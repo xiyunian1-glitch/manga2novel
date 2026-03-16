@@ -4,7 +4,9 @@ import type {
   PageAnalysis,
   ScenePlan,
   StorySynthesis,
+  WritingMode,
 } from './types';
+import { WRITING_MODE_LABELS } from './types';
 
 export const CUSTOM_PRESET_ID = 'custom';
 export const SPECIAL_PROMPT_HEADING = '## 特殊提示词';
@@ -350,6 +352,10 @@ const SECTION_OUTPUT_SCHEMA = `{
   "continuitySummary": "本节结束时的承接摘要"
 }`;
 
+const FINAL_POLISH_OUTPUT_SCHEMA = `{
+  "novelText": "统稿或润色后的全书正文"
+}`;
+
 const SECTION_SYSTEM_PROMPT_BODY = `## 你的任务
 你会收到已经整理好的漫画场景资料，而不是原始图片。
 请只根据这些结构化资料创作连贯、耐读的中文小说正文。
@@ -363,6 +369,17 @@ const SECTION_SYSTEM_PROMPT_BODY = `## 你的任务
 6. 如遇敏感画面，只保留剧情推进所必需的信息，避免露骨描写。
 7. 只返回 JSON，不要附加 Markdown 代码块或额外说明。
 ${SECTION_OUTPUT_SCHEMA}`;
+
+const FINAL_POLISH_SYSTEM_PROMPT_BODY = `## 你的任务
+你会收到已经完成章节写作的整本小说初稿，以及整书综合得到的人物、世界观和场景大纲资料。请在不改变核心剧情的前提下，对全书做统稿或润色。
+
+## 输出规则
+1. 不要新增或删改关键剧情、角色关系、世界规则和结局走向。
+2. 优先修正前后称呼、时序、语气、重复、衔接断裂和文风不统一的问题。
+3. 可以优化句段表达、节奏和章节过渡，但不要把原稿改成另一部故事。
+4. 如果原稿已经稳定，优先轻修，不要为了“更文学”而过度改写。
+5. 只返回 JSON，不要附加 Markdown 代码块或额外说明。
+${FINAL_POLISH_OUTPUT_SCHEMA}`;
 
 function stringifyPromptData(data: unknown): string {
   return JSON.stringify(data, null, 2);
@@ -391,6 +408,18 @@ function dedupeStrings(values: Array<string | undefined>, limit = 6): string[] {
   }
 
   return result;
+}
+
+function buildWritingModeInstruction(writingMode: WritingMode, stage: 'section' | 'polish'): string {
+  if (writingMode === 'literary') {
+    return stage === 'polish'
+      ? '在不改变关键剧情、人物关系和结局的前提下，增强全书的语言质感、气氛、节奏、衔接与情绪推进，让成文更像成熟小说。'
+      : '在不改变关键剧情、人物关系和事件顺序的前提下，可以适度加强氛围、节奏、心理和叙述张力，让场景更像成熟小说章节。';
+  }
+
+  return stage === 'polish'
+    ? '以原有章节正文和整书资料为准，优先修正一致性、重复和衔接问题，避免不必要的文学化扩写。'
+    : '优先保证信息准确、承接稳定、事件清晰，少做无依据的延展和过度文学化描写。';
 }
 
 function summarizeCharacterContext(pageAnalyses: PageAnalysis[], limit = 10) {
@@ -494,6 +523,11 @@ function buildChunkContinuityChain(chunkSyntheses: ChunkSynthesis[]) {
 export function buildSectionSystemPrompt(systemPrompt: string): string {
   const { supplementalPrompt, roleAndStyle } = splitSystemPrompt(systemPrompt);
   return composeSystemPrompt(supplementalPrompt, roleAndStyle, SECTION_SYSTEM_PROMPT_BODY);
+}
+
+export function buildFinalPolishSystemPrompt(systemPrompt: string): string {
+  const { supplementalPrompt, roleAndStyle } = splitSystemPrompt(systemPrompt);
+  return composeSystemPrompt(supplementalPrompt, roleAndStyle, FINAL_POLISH_SYSTEM_PROMPT_BODY);
 }
 
 export function buildPageAnalysisPrompt(
@@ -643,6 +677,7 @@ export function buildSectionUserPrompt(
   scenePlan: ScenePlan,
   chunkSyntheses: ChunkSynthesis[],
   pageAnalyses: PageAnalysis[],
+  writingMode: WritingMode,
   template = USER_PROMPT_TEMPLATE
 ): string {
   const runtimeTemplate = template.trim() || USER_PROMPT_TEMPLATE;
@@ -764,6 +799,8 @@ export function buildSectionUserPrompt(
   const enrichedSceneSourceBlock = [
     'Use the current section as the main source of truth. Use previous and next scene context only to smooth transitions, preserve character consistency, and maintain narrative continuity.',
     '',
+    `【写作模式】\n${WRITING_MODE_LABELS[writingMode]}：${buildWritingModeInstruction(writingMode, 'section')}`,
+    '',
     sceneSourceBlock,
     '',
     'Section continuity context',
@@ -792,4 +829,45 @@ export function buildSectionUserPrompt(
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+export function buildFinalPolishUserPrompt(
+  storySynthesis: StorySynthesis,
+  fullNovel: string,
+  writingMode: WritingMode
+): string {
+  const polishContext = {
+    storyOverview: storySynthesis.storyOverview,
+    worldGuide: storySynthesis.worldGuide,
+    characterGuide: storySynthesis.characterGuide,
+    writingConstraints: storySynthesis.writingConstraints,
+    sceneOutline: storySynthesis.sceneOutline.map((scene) => ({
+      sceneId: scene.sceneId,
+      title: scene.title,
+      summary: scene.summary,
+      chunkIndexes: scene.chunkIndexes,
+    })),
+  };
+
+  return [
+    '请对下面这份已经完成章节写作的全书初稿进行一次全书统稿/润色。',
+    '',
+    `【写作模式】\n${WRITING_MODE_LABELS[writingMode]}：${buildWritingModeInstruction(writingMode, 'polish')}`,
+    '',
+    '要求：',
+    '1. 不要新增关键剧情、设定或人物关系。',
+    '2. 优先修正前后不一致、称呼变化、时间线断裂、重复表达和衔接生硬的问题。',
+    '3. 保留原稿主要内容和顺序，不要大幅删减。',
+    '4. 如果资料和初稿冲突，以初稿中的已成文剧情顺序为主，但要尽量维持整书资料中的角色与世界观一致性。',
+    '5. 只输出 JSON。',
+    '',
+    '【整书资料】',
+    stringifyPromptData(polishContext),
+    '',
+    '【全书初稿】',
+    fullNovel,
+    '',
+    '严格按以下 JSON 输出：',
+    FINAL_POLISH_OUTPUT_SCHEMA,
+  ].join('\n');
 }
