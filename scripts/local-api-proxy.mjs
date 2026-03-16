@@ -12,6 +12,7 @@ if (process.env.M2N_PROXY_USE_ENV_PROXY !== '1') {
 const HOST = process.env.M2N_PROXY_HOST || '127.0.0.1';
 const PORT_START = Number(process.env.M2N_PROXY_PORT_START || process.env.M2N_PROXY_PORT || 8787);
 const PORT_END = Number(process.env.M2N_PROXY_PORT_END || Math.max(PORT_START, PORT_START + 10));
+const UPSTREAM_RETRY_DELAYS_MS = [500, 1500];
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
@@ -36,6 +37,10 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 let activePort = PORT_START;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -107,6 +112,65 @@ function buildUpstreamHeaders(request) {
   return headers;
 }
 
+function extractErrorCode(error) {
+  if (error && typeof error === 'object') {
+    if ('code' in error && typeof error.code === 'string' && error.code) {
+      return error.code;
+    }
+
+    if ('cause' in error && error.cause && typeof error.cause === 'object' && 'code' in error.cause && typeof error.cause.code === 'string') {
+      return error.cause.code;
+    }
+  }
+
+  return '';
+}
+
+function shouldRetryUpstreamRequest(error) {
+  const code = extractErrorCode(error);
+  const message = error instanceof Error ? error.message : String(error || '');
+  const causeMessage = error && typeof error === 'object' && 'cause' in error && error.cause && typeof error.cause === 'object' && 'message' in error.cause
+    ? String(error.cause.message || '')
+    : '';
+  const normalized = `${message} ${causeMessage}`.toLowerCase();
+
+  return code === 'UND_ERR_SOCKET'
+    || code === 'ECONNRESET'
+    || code === 'EPIPE'
+    || code === 'ETIMEDOUT'
+    || code === 'UND_ERR_CONNECT_TIMEOUT'
+    || normalized.includes('other side closed')
+    || normalized.includes('socket hang up')
+    || normalized.includes('connection reset')
+    || normalized.includes('unexpected eof');
+}
+
+async function fetchUpstreamWithRetry(targetUrl, options) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= UPSTREAM_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return {
+        response: await fetch(targetUrl, options),
+        attempts: attempt + 1,
+      };
+    } catch (error) {
+      lastError = error;
+
+      if (!shouldRetryUpstreamRequest(error) || attempt >= UPSTREAM_RETRY_DELAYS_MS.length) {
+        break;
+      }
+
+      await wait(UPSTREAM_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw Object.assign(
+    lastError instanceof Error ? lastError : new Error(String(lastError || 'Upstream request failed')),
+    { retryAttempts: UPSTREAM_RETRY_DELAYS_MS.length + 1 }
+  );
+}
+
 async function handleProxy(request, response) {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || `${HOST}:${activePort}`}`);
 
@@ -144,7 +208,7 @@ async function handleProxy(request, response) {
       ? undefined
       : await readBody(request);
 
-    const upstreamResponse = await fetch(targetUrl, {
+    const { response: upstreamResponse, attempts } = await fetchUpstreamWithRetry(targetUrl, {
       method: request.method,
       headers: buildUpstreamHeaders(request),
       body,
@@ -168,11 +232,13 @@ async function handleProxy(request, response) {
       response.setHeader(name, value);
     });
 
+    response.setHeader('X-Manga2Novel-Proxy-Attempts', String(attempts));
     response.setHeader('Content-Length', payload.length);
     response.end(payload);
   } catch (error) {
     sendJson(response, 502, {
       error: error instanceof Error ? error.message : 'Upstream request failed',
+      attempts: error && typeof error === 'object' && 'retryAttempts' in error ? error.retryAttempts : undefined,
       cause: error && typeof error === 'object' && 'cause' in error && error.cause && typeof error.cause === 'object'
         ? {
             name: error.cause.name,

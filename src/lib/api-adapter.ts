@@ -386,23 +386,6 @@ async function tryFetchViaLocalProxy(url: string, init: RequestInit): Promise<Re
 }
 
 async function fetchWithDiagnostics(url: string, init: RequestInit, context: string): Promise<Response> {
-  let lastProxyError: Error | null = null;
-
-  if (shouldAttemptLocalProxy(url)) {
-    try {
-      const proxiedResponse = await tryFetchViaLocalProxy(url, init);
-      if (proxiedResponse) {
-        return proxiedResponse;
-      }
-    } catch (proxyError) {
-      if (isAbortError(proxyError)) {
-        throw proxyError;
-      }
-
-      lastProxyError = proxyError instanceof Error ? proxyError : new Error(String(proxyError));
-    }
-  }
-
   try {
     return await fetch(url, init);
   } catch (directError) {
@@ -411,6 +394,21 @@ async function fetchWithDiagnostics(url: string, init: RequestInit, context: str
     }
 
     if (shouldAttemptLocalProxy(url)) {
+      let lastProxyError: Error | null = null;
+
+      try {
+        const proxiedResponse = await tryFetchViaLocalProxy(url, init);
+        if (proxiedResponse) {
+          return proxiedResponse;
+        }
+      } catch (proxyError) {
+        if (isAbortError(proxyError)) {
+          throw proxyError;
+        }
+
+        lastProxyError = proxyError instanceof Error ? proxyError : new Error(String(proxyError));
+      }
+
       throw formatProxyFetchFailure(context, url, directError, lastProxyError);
     }
 
