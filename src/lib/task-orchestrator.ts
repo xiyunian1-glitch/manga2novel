@@ -122,6 +122,9 @@ const PAGE_ANALYSIS_MAX_TOKENS = 2048;
 const SYNTHESIS_MAX_TOKENS = 6144;
 const WRITING_MAX_TOKENS = 4096;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
+const SYNTHESIS_REQUEST_TIMEOUT_MS = 120_000;
+const SECTION_WRITING_TIMEOUT_MS = 150_000;
+const FINAL_POLISH_TIMEOUT_MS = 180_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -516,7 +519,15 @@ function isInputTokenLimitError(message: string): boolean {
 }
 
 function isCapacityAvailabilityError(message: string): boolean {
-  return /no capacity available for model|model .* is at capacity|currently at capacity|capacity unavailable|server is busy|overloaded|resource has been exhausted|quota(?:\s+has)?\s+been exhausted|check quota|insufficient quota|quota exceeded/i.test(message);
+  return isTransientCapacityError(message) || isHardQuotaExceededError(message);
+}
+
+function isTransientCapacityError(message: string): boolean {
+  return /no capacity available for model|model .* is at capacity|currently at capacity|capacity unavailable|server is busy|overloaded/i.test(message);
+}
+
+function isHardQuotaExceededError(message: string): boolean {
+  return /resource has been exhausted|quota(?:\s+has)?\s+been exhausted|check quota|insufficient quota|quota exceeded|billing hard limit|credit balance/i.test(message);
 }
 
 function isPageAnalysisConnectionError(message: string): boolean {
@@ -556,8 +567,12 @@ function parseRetryAfterDelayMs(message: string): number | null {
 }
 
 function getImplicitRecoveryRetryLimit(message: string): number {
-  if (isCapacityAvailabilityError(message)) {
-    return 2;
+  if (isHardQuotaExceededError(message)) {
+    return 0;
+  }
+
+  if (isTransientCapacityError(message)) {
+    return 1;
   }
 
   if (isTransientEmptyCompletionError(message)) {
@@ -585,6 +600,28 @@ function getImplicitRecoveryRetryDelayMs(message: string, fallbackDelayMs: numbe
   }
 
   return Math.min(30_000, Math.max(6_000, fallbackDelayMs));
+}
+
+function buildRequestTimeoutMessage(
+  request: Pick<ModelRequest, 'stage' | 'itemLabel'>,
+  timeoutMs: number
+): string {
+  const stageName = REQUEST_STAGE_LABELS[request.stage];
+  const timeoutSeconds = Math.max(1, Math.round(timeoutMs / 1000));
+
+  switch (request.stage) {
+    case 'analyze-pages':
+      return `“${stageName} / ${request.itemLabel}”在 ${timeoutSeconds} 秒内没有完成，已自动停止当前请求。建议减少每组图片数后重试。`;
+    case 'synthesize-chunks':
+    case 'synthesize-story':
+      return `“${stageName} / ${request.itemLabel}”在 ${timeoutSeconds} 秒内没有完成，已自动停止当前请求。建议减小 Chunk Size 或降低单次综合量后重试。`;
+    case 'write-sections':
+      return `“${stageName} / ${request.itemLabel}”在 ${timeoutSeconds} 秒内没有完成，已自动停止当前请求。建议拆细场景、缩短单章长度，或换更稳的写作模型后重试。`;
+    case 'polish-novel':
+      return `“${stageName} / ${request.itemLabel}”在 ${timeoutSeconds} 秒内没有完成，已自动停止当前请求。建议稍后重试，或先关闭全书统稿继续完成正文。`;
+    default:
+      return `“${request.itemLabel}”在 ${timeoutSeconds} 秒内没有完成，已自动停止当前请求。`;
+  }
 }
 
 function getTruncationRetryTokenCap(stage: RequestStage): number {
@@ -1008,11 +1045,19 @@ export class TaskOrchestrator {
   }
 
   private getRequestTimeoutMs(request: ModelRequest): number | null {
-    if (request.stage === 'analyze-pages' && request.imageNames.length > 1) {
-      return PAGE_ANALYSIS_BATCH_TIMEOUT_MS;
+    switch (request.stage) {
+      case 'analyze-pages':
+        return PAGE_ANALYSIS_BATCH_TIMEOUT_MS;
+      case 'synthesize-chunks':
+      case 'synthesize-story':
+        return SYNTHESIS_REQUEST_TIMEOUT_MS;
+      case 'write-sections':
+        return SECTION_WRITING_TIMEOUT_MS;
+      case 'polish-novel':
+        return FINAL_POLISH_TIMEOUT_MS;
+      default:
+        return null;
     }
-
-    return null;
   }
 
   private getPageAnalysesForChunk(chunkIndex: number): PageAnalysis[] {
@@ -2229,9 +2274,10 @@ export class TaskOrchestrator {
       const attemptTraceSequence = startAttemptTrace(model, currentMaxOutputTokens);
 
       try {
+        const requestTimeoutMs = this.getRequestTimeoutMs(request);
         const requestSignal = createRequestSignal(
           this.abortController?.signal,
-          this.getRequestTimeoutMs(request)
+          requestTimeoutMs
         );
 
         const rawText = await callAIText(
@@ -2250,8 +2296,7 @@ export class TaskOrchestrator {
           requestSignal.signal
         ).catch((error) => {
           if (isAbortError(error) && requestSignal.didTimeout()) {
-            const timeoutSeconds = Math.round((this.getRequestTimeoutMs(request) || 0) / 1000);
-            throw new Error(`The page analysis request timed out after ${timeoutSeconds} seconds.`);
+            throw new Error(buildRequestTimeoutMessage(request, requestTimeoutMs || 0));
           }
           throw error;
         }).finally(() => {
@@ -2274,6 +2319,8 @@ export class TaskOrchestrator {
         const inputTokenLimitError = isInputTokenLimitError(errorMessage);
         const browserReachabilityError = isBrowserReachabilityError(errorMessage);
         const truncatedCompletionError = isTruncatedCompletionError(errorMessage);
+        const hardQuotaExceededError = isHardQuotaExceededError(errorMessage);
+        const transientCapacityError = isTransientCapacityError(errorMessage);
 
         if (tokenLimitError) {
           const overflow = Math.max(1, tokenLimitError.requestedTotal - tokenLimitError.maxSeqLen);
@@ -2346,6 +2393,16 @@ export class TaskOrchestrator {
           break;
         }
 
+        if (hardQuotaExceededError) {
+          target.retryCount = attempt + 1;
+          target.error = errorMessage;
+          finishAttemptTrace(attemptTraceSequence, 'error', {
+            error: errorMessage,
+            nextAction: '检测到当前 key / 账户额度不足，停止自动重试',
+          });
+          break;
+        }
+
         if (
           request.stage === 'analyze-pages'
           && request.imageNames.length > 1
@@ -2377,6 +2434,16 @@ export class TaskOrchestrator {
           await waitForAbortableDelay(delay, this.abortController?.signal);
           attempt -= 1;
           continue;
+        }
+
+        if (transientCapacityError && implicitRecoveryRetryLimit > 0) {
+          target.retryCount = attempt + 1;
+          target.error = errorMessage;
+          finishAttemptTrace(attemptTraceSequence, 'error', {
+            error: errorMessage,
+            nextAction: '上游容量短时未恢复，停止自动重试',
+          });
+          break;
         }
 
         target.retryCount = attempt + 1;

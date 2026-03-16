@@ -218,6 +218,10 @@ function isRemoteBrowserSession(): boolean {
   return typeof window !== 'undefined' && !isLocalBrowserSession();
 }
 
+function canUseLocalProxyInBrowser(): boolean {
+  return typeof window !== 'undefined';
+}
+
 function isLocalBrowserSession(): boolean {
   if (typeof window === 'undefined') {
     return false;
@@ -228,7 +232,7 @@ function isLocalBrowserSession(): boolean {
 }
 
 function shouldAttemptLocalProxy(url: string): boolean {
-  if (!isLocalBrowserSession()) {
+  if (!canUseLocalProxyInBrowser()) {
     return false;
   }
 
@@ -324,7 +328,7 @@ function extractPortFromProxyEndpoint(proxyEndpoint: string | null): number | nu
 }
 
 export async function detectLocalProxyStatus(): Promise<LocalProxyStatus> {
-  if (!isLocalBrowserSession()) {
+  if (!canUseLocalProxyInBrowser()) {
     return {
       isLocalSession: false,
       available: false,
