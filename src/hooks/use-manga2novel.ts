@@ -18,11 +18,14 @@ import {
   DEFAULT_COMPATIBLE_BASE_URL,
   DEFAULT_CREATIVE_SETTINGS,
   DEFAULT_FINAL_POLISH,
+  DEFAULT_GEMINI_BASE_URL,
   DEFAULT_ORCHESTRATOR_CONFIG,
   DEFAULT_MEMORY_STATE,
   DEFAULT_STAGE_API_OVERRIDES,
   DEFAULT_STAGE_MODELS,
   DEFAULT_STORY_SYNTHESIS,
+  DEFAULT_WRITING_PREPARATION,
+  GEMINI_ROOT_BASE_URL,
   getEnabledRequestStages,
   LEGACY_OPENROUTER_BASE_URL,
   PROVIDER_DISPLAY_NAMES,
@@ -88,7 +91,7 @@ function resolvePresetIdFromPresets(systemPrompt: string, presets: CreativePrese
 
 function canResolveModels(
   config: APIConfig,
-  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish' | 'workflowMode'>
 ): boolean {
   return getEnabledRequestStages(orchestratorConfig).every((stage) => Boolean(resolveStageModel(config, stage)));
 }
@@ -110,8 +113,27 @@ function normalizeBaseUrl(
   baseUrl: string | null | undefined,
   legacyProvider?: APIConfig['provider'] | 'openrouter' | null
 ): string {
-  const normalizedBaseUrl = baseUrl?.trim() || '';
+  const normalizedBaseUrl = baseUrl?.trim().replace(/\/+$/, '') || '';
   if (normalizedBaseUrl) {
+    if (provider === 'gemini') {
+      try {
+        const parsedUrl = new URL(normalizedBaseUrl);
+        const normalizedPath = parsedUrl.pathname.replace(/\/+$/, '');
+
+        if (
+          parsedUrl.origin.toLowerCase() === GEMINI_ROOT_BASE_URL
+          && (!normalizedPath || normalizedPath === '/v1beta')
+        ) {
+          return GEMINI_ROOT_BASE_URL;
+        }
+      } catch {
+        const loweredBaseUrl = normalizedBaseUrl.toLowerCase();
+        if (loweredBaseUrl === GEMINI_ROOT_BASE_URL || loweredBaseUrl === DEFAULT_GEMINI_BASE_URL) {
+          return GEMINI_ROOT_BASE_URL;
+        }
+      }
+    }
+
     return normalizedBaseUrl;
   }
 
@@ -192,7 +214,7 @@ function normalizeApiConfig(config: APIConfig): APIConfig {
     providerLabel: normalizeProviderLabel(config),
     apiKey: config.apiKey.trim(),
     model: config.model.trim(),
-    baseUrl: config.baseUrl?.trim() || '',
+    baseUrl: normalizeBaseUrl(config.provider, config.baseUrl),
     stageModels: normalizeStageModels(config.stageModels),
     stageAPIOverrides: normalizeStageAPIOverrides(config.stageAPIOverrides),
   };
@@ -371,7 +393,7 @@ function ensureUniqueProfileName(
 
 function canResolveStageAccess(
   config: APIConfig,
-  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish' | 'workflowMode'>
 ): boolean {
   return getEnabledRequestStages(orchestratorConfig).every((stage) => {
     const stageConfig = resolveStageAPIConfig(config, stage);
@@ -487,6 +509,7 @@ export function useManga2Novel() {
       sceneOutline: [],
       writingConstraints: [],
     },
+    writingPreparation: { ...DEFAULT_WRITING_PREPARATION },
     novelSections: [],
     finalPolish: { ...DEFAULT_FINAL_POLISH },
     memory: { ...DEFAULT_MEMORY_STATE },
@@ -498,6 +521,8 @@ export function useManga2Novel() {
     },
     currentChunkIndex: -1,
     fullNovel: '',
+    runtimeMs: 0,
+    runtimeStartedAt: undefined,
     lastAIRequest: undefined,
   });
   const [configLoaded, setConfigLoaded] = useState(false);
@@ -574,7 +599,6 @@ export function useManga2Novel() {
       setApiProfiles(nextProfiles);
       setActiveApiProfileIdState(nextActiveProfileId);
       setCreativePresets(nextPresets);
-
       if (savedOrcConfig) {
         orchestrator.updateConfig(savedOrcConfig);
       }
@@ -1035,8 +1059,42 @@ const startProcessing = useCallback(async () => {
     return orchestrator.regenerateSectionAndPause(sectionIndex);
   }, [orchestrator]);
 
+  const regenerateWritingPreparation = useCallback(async () => {
+    return orchestrator.regenerateWritingPreparationAndPause();
+  }, [orchestrator]);
+
   const regenerateFinalPolish = useCallback(async () => {
     return orchestrator.regenerateFinalPolishAndPause();
+  }, [orchestrator]);
+
+  const updatePageAnalysis = useCallback((pageIndex: number, value: unknown) => {
+    orchestrator.updatePageAnalysis(pageIndex, value);
+    setTaskState(orchestrator.getState());
+  }, [orchestrator]);
+
+  const updateChunkSynthesis = useCallback((chunkIndex: number, value: unknown) => {
+    orchestrator.updateChunkSynthesis(chunkIndex, value);
+    setTaskState(orchestrator.getState());
+  }, [orchestrator]);
+
+  const updateStorySynthesis = useCallback((value: unknown) => {
+    orchestrator.updateStorySynthesis(value);
+    setTaskState(orchestrator.getState());
+  }, [orchestrator]);
+
+  const updateWritingPreparation = useCallback((value: unknown) => {
+    orchestrator.updateWritingPreparation(value);
+    setTaskState(orchestrator.getState());
+  }, [orchestrator]);
+
+  const updateNovelSection = useCallback((sectionIndex: number, value: unknown) => {
+    orchestrator.updateNovelSection(sectionIndex, value);
+    setTaskState(orchestrator.getState());
+  }, [orchestrator]);
+
+  const updateFinalPolish = useCallback((value: unknown) => {
+    orchestrator.updateFinalPolish(value);
+    setTaskState(orchestrator.getState());
   }, [orchestrator]);
 
   const updateSceneOutline = useCallback((sceneOutline: ScenePlan[]) => {
@@ -1111,7 +1169,14 @@ const startProcessing = useCallback(async () => {
     regenerateChunk,
     regenerateStory,
     regenerateSection,
+    regenerateWritingPreparation,
     regenerateFinalPolish,
+    updatePageAnalysis,
+    updateChunkSynthesis,
+    updateStorySynthesis,
+    updateWritingPreparation,
+    updateNovelSection,
+    updateFinalPolish,
     updateSceneOutline,
     confirmSceneOutline,
     confirmSceneOutlineAndResume,

@@ -1,208 +1,201 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  CheckCircle,
+  Clock,
+  Eye,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  SkipForward,
+  XCircle,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
 import {
-  ArrowLeft,
-  CheckCircle,
-  ChevronDown,
-  ChevronUp,
-  Clock,
-  Eye,
-  Layers,
-  Loader2,
-  SkipForward,
-  TimerReset,
-  XCircle,
-} from 'lucide-react';
+  applyDialogueResolutionMap,
+  createDialogueResolutionMap,
+} from '@/lib/dialogue-resolution';
 import { getTroubleshootingAdvice } from '@/lib/error-hints';
-import type { ChunkStatus, PageAnalysis, PipelineStage, RequestStage, TaskState } from '@/lib/types';
+import type { ChunkStatus, PipelineStage, RequestStage, TaskState } from '@/lib/types';
 
 interface ProgressPanelProps {
   taskState: TaskState;
   onRegenerateItem?: (stage: RequestStage, itemIndex: number) => Promise<void>;
+  onUpdateItem?: (stage: RequestStage, itemIndex: number, value: unknown) => Promise<void>;
 }
 
-type ActiveItem = {
+type StageCard = {
+  stage: RequestStage;
+  title: string;
+  value: string;
+  hint: string;
+  secondary?: string;
+};
+
+type ProgressItem = {
   key: string;
   stage: RequestStage;
   itemIndex: number;
+  batchIndex?: number;
+  runtimeScope?: 'item' | 'batch';
   label: string;
   meta: string;
   status: ChunkStatus;
+  runtimeMs: number;
+  runtimeStartedAt?: string;
+  preview: string;
+  detail: string;
   error?: string;
-  detailTitle: string;
-  detailContent: string;
-  previewContent: string;
 };
 
-type StagePreview = {
-  stage: RequestStage;
-  title: string;
-  description: string;
-  emptyText: string;
-  items: ActiveItem[];
-};
+function isSplitDraftMode(taskState: TaskState): boolean {
+  return taskState.config.workflowMode === 'split-draft';
+}
 
-type StatusPresentation = {
-  compactLabel: string;
-  secondaryLabel?: string;
-};
+function isCompletedStatus(status: ChunkStatus, error?: string): boolean {
+  return status === 'success' || (status === 'skipped' && !String(error || '').trim());
+}
 
-function ChunkStatusIcon({ status }: { status: ChunkStatus }) {
+function countCompleted(items: Array<{ status: ChunkStatus; error?: string }>): number {
+  return items.filter((item) => isCompletedStatus(item.status, item.error)).length;
+}
+
+function statusLabel(status: ChunkStatus): string {
   switch (status) {
+    case 'processing':
+      return '处理中';
+    case 'success':
+      return '完成';
+    case 'error':
+      return '失败';
+    case 'skipped':
+      return '已跳过';
+    default:
+      return '等待中';
+  }
+}
+
+function formatRuntime(runtimeMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(runtimeMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getLiveRuntimeMs(runtimeMs: number, runtimeStartedAt: string | undefined, nowMs: number): number {
+  const startedAtMs = runtimeStartedAt ? Date.parse(runtimeStartedAt) : Number.NaN;
+  return runtimeMs + (
+    Number.isFinite(startedAtMs)
+      ? Math.max(0, nowMs - startedAtMs)
+      : 0
+  );
+}
+
+function hasAnyItemRuntimeInProgress(taskState: TaskState): boolean {
+  return taskState.pageAnalyses.some((page) => Boolean(page.runtimeStartedAt))
+    || taskState.chunkSyntheses.some((chunk) => Boolean(chunk.runtimeStartedAt))
+    || Boolean(taskState.globalSynthesis.runtimeStartedAt)
+    || Boolean(taskState.writingPreparation.runtimeStartedAt)
+    || taskState.novelSections.some((section) => Boolean(section.runtimeStartedAt))
+    || Boolean(taskState.finalPolish.runtimeStartedAt);
+}
+
+function formatItemRuntimeLabel(item: ProgressItem, nowMs: number): string | null {
+  const runtimeMs = getLiveRuntimeMs(item.runtimeMs, item.runtimeStartedAt, nowMs);
+  if (runtimeMs <= 0) {
+    return null;
+  }
+
+  const isBatchRuntime = item.runtimeScope === 'batch';
+  if (item.status === 'processing') {
+    return `${isBatchRuntime ? '本批运行时间' : '运行时间'} ${formatRuntime(runtimeMs)}`;
+  }
+
+  return `${isBatchRuntime ? '本批用时' : '用时'} ${formatRuntime(runtimeMs)}`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function formatItemRuntimeLabelLegacy(item: ProgressItem, nowMs: number): string | null {
+  const runtimeMs = getLiveRuntimeMs(item.runtimeMs, item.runtimeStartedAt, nowMs);
+  if (runtimeMs <= 0) {
+    return null;
+  }
+
+  return `${item.status === 'processing' ? '运行时间' : '用时'} ${formatRuntime(runtimeMs)}`;
+}
+
+function StatusIcon({ status }: { status: ChunkStatus }) {
+  switch (status) {
+    case 'processing':
+      return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
     case 'success':
       return <CheckCircle className="h-4 w-4 text-green-500" />;
     case 'error':
       return <XCircle className="h-4 w-4 text-red-500" />;
-    case 'processing':
-      return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
     case 'skipped':
-      return <SkipForward className="h-4 w-4 text-yellow-500" />;
+      return <SkipForward className="h-4 w-4 text-amber-500" />;
     default:
       return <Clock className="h-4 w-4 text-muted-foreground" />;
   }
 }
 
-function statusLabel(
-  status: ChunkStatus,
-  options?: {
-    stage?: RequestStage;
-    hasFallbackContent?: boolean;
-  }
-): string {
-  const labels: Record<ChunkStatus, string> = {
-    pending: '等待',
-    processing: '处理中',
-    success: '完成',
-    error: '失败',
-    skipped: '已跳过',
-  };
-
-  if (
-    status === 'skipped'
-    && (
-      options?.hasFallbackContent
-      || options?.stage === 'synthesize-chunks'
-      || options?.stage === 'synthesize-story'
-    )
-  ) {
-    return '已跳过（兜底综合）';
-  }
-
-  return labels[status];
-}
-
-function buildSkippedFallbackNotice(stage: RequestStage): string | null {
-  switch (stage) {
-    case 'synthesize-chunks':
-      return '说明：当前内容来自跳过后的兜底分块综合，不是本阶段模型成功返回。';
-    case 'synthesize-story':
-      return '说明：当前内容来自跳过后的兜底整书综合，不是本阶段模型成功返回。';
-    case 'polish-novel':
-      return '说明：当前全书统稿阶段被跳过，因此导出内容仍然是章节写作完成后的拼接正文。';
-    default:
-      return null;
-  }
-}
-
-function buildDualStateNotice(stage: RequestStage): string | null {
-  switch (stage) {
-    case 'synthesize-chunks':
-      return '双状态：本阶段失败；流程已改用兜底分块综合继续。当前内容不是本阶段模型成功返回。';
-    case 'synthesize-story':
-      return '双状态：本阶段失败；流程已改用兜底整书综合继续。当前内容不是本阶段模型成功返回。';
-    case 'polish-novel':
-      return '双状态：本阶段已跳过；当前正文沿用章节写作结果。当前内容不是全书统稿模型输出。';
-    default:
-      return null;
-  }
-}
-
-function getStatusPresentation(
-  status: ChunkStatus,
-  options?: {
-    stage?: RequestStage;
-    hasFallbackContent?: boolean;
-  }
-): StatusPresentation {
-  const compactLabel = status === 'skipped' ? '已跳过' : statusLabel(status, options);
-
-  if (status !== 'skipped') {
-    return { compactLabel };
-  }
-
-  if (options?.stage === 'synthesize-chunks') {
-    return {
-      compactLabel,
-      secondaryLabel: '本阶段失败，已用兜底分块综合继续',
-    };
-  }
-
-  if (options?.stage === 'synthesize-story' || options?.hasFallbackContent) {
-    return {
-      compactLabel,
-      secondaryLabel: '本阶段失败，已用兜底整书综合继续',
-    };
-  }
-
-  if (options?.stage === 'polish-novel') {
-    return {
-      compactLabel,
-      secondaryLabel: '本阶段已跳过，当前正文沿用章节写作结果',
-    };
-  }
-
-  return { compactLabel };
-}
-
 function stageLabel(stage: PipelineStage): string {
-  const labels: Record<PipelineStage, string> = {
-    idle: '空闲',
+  if (stage === 'idle') {
+    return '空闲';
+  }
+
+  const labels: Record<RequestStage, string> = {
     'analyze-pages': '逐页分析',
     'synthesize-chunks': '分块综合',
     'synthesize-story': '整书综合',
     'write-sections': '章节写作',
-    'polish-novel': '全书统稿',
+    'polish-novel': '全书润色',
   };
+
   return labels[stage];
 }
 
-function countCompleted(items: Array<{ status: ChunkStatus }>): number {
-  return items.filter((item) => item.status === 'success' || item.status === 'skipped').length;
+function getDisplayStage(taskState: TaskState): RequestStage {
+  if (taskState.currentStage !== 'idle') {
+    return taskState.currentStage;
+  }
+
+  return 'analyze-pages';
 }
 
-function formatDuration(milliseconds: number): string {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
+function formatPageRange(pageNumbers: number[]): string {
+  if (pageNumbers.length === 0) {
+    return '无页码';
+  }
 
-function joinValues(values: Array<string | undefined>, fallback = '无'): string {
-  const filtered = values
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  return filtered.length > 0 ? filtered.join('、') : fallback;
+  const sorted = [...pageNumbers].sort((a, b) => a - b);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  return first === last ? `第 ${first} 页` : `第 ${first}-${last} 页`;
 }
 
 function extractPreview(text: string | undefined, maxLength = 180): string {
-  const normalized = String(text || '')
-    .trim()
-    .replace(/\n{3,}/g, '\n\n');
-
+  const normalized = String(text || '').trim().replace(/\n{3,}/g, '\n\n');
   if (!normalized) {
     return '暂无';
   }
@@ -212,947 +205,932 @@ function extractPreview(text: string | undefined, maxLength = 180): string {
     : normalized;
 }
 
-function speakerConfidenceLabel(confidence?: 'high' | 'medium' | 'low'): string {
-  const labels = {
-    high: '高',
-    medium: '中',
-    low: '低',
-  } as const;
-
-  return confidence ? labels[confidence] : '未标注';
+function joinValues(values: Array<string | undefined>, fallback = '无'): string {
+  const normalized = values.map((value) => String(value || '').trim()).filter(Boolean);
+  return normalized.length > 0 ? normalized.join(' / ') : fallback;
 }
 
-function formatPageRange(pageNumbers: number[]): string {
-  if (pageNumbers.length === 0) {
-    return '暂无页码';
+function buildChunkPreview(
+  chunk: TaskState['chunkSyntheses'][number],
+  splitDraftMode: boolean
+): string {
+  const primaryLine = chunk.summary?.trim()
+    ? `摘要：${chunk.summary}`
+    : chunk.draftText?.trim()
+      ? `草稿片段：${extractPreview(chunk.draftText, splitDraftMode ? 90 : 140)}`
+      : '';
+  const previewLines = [
+    primaryLine,
+    chunk.keyDevelopments.length > 0 ? `推进：${joinValues(chunk.keyDevelopments)}` : '',
+    chunk.dialogueResolutions.length > 0 ? `对白修正：${chunk.dialogueResolutions.length} 条` : '',
+    chunk.continuitySummary?.trim() ? `承接：${chunk.continuitySummary}` : '',
+  ].filter(Boolean);
+
+  if (previewLines.length > 0) {
+    return previewLines.slice(0, splitDraftMode ? 2 : 3).join('\n');
   }
 
-  const sorted = [...pageNumbers].sort((left, right) => left - right);
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
-
-  return first === last ? `第 ${first} 页` : `第 ${first}-${last} 页`;
-}
-
-function buildPageMeta(page: PageAnalysis): string {
-  const parts = [page.location, page.timeHint].filter(Boolean);
-  return parts.length > 0 ? parts.join(' / ') : '尚未提取场景信息';
-}
-
-function buildPagePreview(page: PageAnalysis): string {
-  const dialoguePreview = page.dialogue
-    .slice(0, 2)
-    .map((line) => `${line.speaker}：${line.text}`)
-    .join('\n');
-
-  return [
-    `摘要：${page.summary || '暂无'}`,
-    `关键事件：${joinValues(page.keyEvents, '无')}`,
-    `角色：${joinValues(page.characters.map((character) => character.name), '无')}`,
-    dialoguePreview ? `对白预览：\n${dialoguePreview}` : '对白预览：无',
-  ].join('\n\n');
-}
-
-function buildPageDetail(page: PageAnalysis): string {
-  const characterLines = page.characters.length > 0
-    ? page.characters.map((character) => (
-        [
-          `- ${character.name}（${character.role || '作用未明'}）`,
-          `  特征：${joinValues(character.traits, '无')}`,
-          `  关系线索：${joinValues(character.relationshipHints, '无')}`,
-          `  证据：${joinValues(character.evidence, '无')}`,
-        ].join('\n')
-      )).join('\n')
-    : '无';
-  const dialogueLines = page.dialogue.length > 0
-    ? page.dialogue.map((line) => (
-        [
-          `- ${line.speaker}：${line.text}`,
-          line.speakerEvidence ? `  归属证据：${line.speakerEvidence}` : '',
-          `  置信度：${speakerConfidenceLabel(line.speakerConfidence)}`,
-        ].filter(Boolean).join('\n')
-      )).join('\n')
-    : '无';
-  const narrationLines = page.narrationText.length > 0 ? page.narrationText.join('\n') : '无';
-  const visualTextLines = page.visualText.length > 0 ? page.visualText.join('\n') : '无';
-
-  return [
-    `摘要：${page.summary || '暂无'}`,
-    `地点：${page.location || '未知'}`,
-    `时间：${page.timeHint || '未知'}`,
-    `关键事件：${joinValues(page.keyEvents, '无')}`,
-    `对白：\n${dialogueLines}`,
-    `旁白/内心独白：\n${narrationLines}`,
-    `画面文字：\n${visualTextLines}`,
-    `角色：\n${characterLines}`,
-    page.error ? `错误：${page.error}` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildChunkPreview(chunk: TaskState['chunkSyntheses'][number]): string {
-  const skippedNotice = chunk.status === 'skipped'
-    ? buildDualStateNotice('synthesize-chunks')
-    : null;
-
-  return [
-    skippedNotice,
-    `摘要：${chunk.summary || '暂无'}`,
-    `情节推进：${joinValues(chunk.keyDevelopments, '无')}`,
-    `承接摘要：${chunk.continuitySummary || '暂无'}`,
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildChunkDetail(chunk: TaskState['chunkSyntheses'][number]): string {
-  const skippedNotice = chunk.status === 'skipped'
-    ? buildDualStateNotice('synthesize-chunks')
-    : null;
-
-  return [
-    skippedNotice,
-    `页码范围：${formatPageRange(chunk.pageNumbers)}`,
-    `摘要：${chunk.summary || '暂无'}`,
-    `情节推进：${joinValues(chunk.keyDevelopments, '无')}`,
-    `承接摘要：${chunk.continuitySummary || '暂无'}`,
-    chunk.error ? `错误：${chunk.error}` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildStoryPreview(taskState: TaskState): string {
-  const scenePreview = taskState.globalSynthesis.sceneOutline
-    .slice(0, 3)
-    .map((scene) => `- ${scene.title}（分块 ${scene.chunkIndexes.map((index) => index + 1).join('、')}）`)
-    .join('\n');
-  const skippedNotice = taskState.globalSynthesis.status === 'skipped'
-    ? buildDualStateNotice('synthesize-story')
-    : null;
-
-  return [
-    skippedNotice,
-    `全书概览：${extractPreview(taskState.globalSynthesis.storyOverview, 220)}`,
-    `人物关系：${extractPreview(taskState.globalSynthesis.characterGuide, 160)}`,
-    scenePreview ? `场景预览：\n${scenePreview}` : '场景预览：暂无',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildStoryDetail(taskState: TaskState): string {
-  const sceneLines = taskState.globalSynthesis.sceneOutline.length > 0
-    ? taskState.globalSynthesis.sceneOutline.map((scene) => (
-        `- ${scene.title}（分块 ${scene.chunkIndexes.map((index) => index + 1).join('、')}）\n  ${scene.summary || '暂无摘要'}`
-      )).join('\n')
-    : '无';
-  const skippedNotice = taskState.globalSynthesis.status === 'skipped'
-    ? buildDualStateNotice('synthesize-story')
-    : null;
-
-  return [
-    skippedNotice,
-    `全书概览：${taskState.globalSynthesis.storyOverview || '暂无'}`,
-    `世界说明：${taskState.globalSynthesis.worldGuide || '暂无'}`,
-    `人物说明：${taskState.globalSynthesis.characterGuide || '暂无'}`,
-    `sceneOutline 确认：${taskState.globalSynthesis.outlineConfirmed ? '已确认' : '待确认'}`,
-    `场景大纲：\n${sceneLines}`,
-    `写作约束：${joinValues(taskState.globalSynthesis.writingConstraints, '无')}`,
-    taskState.globalSynthesis.error ? `错误：${taskState.globalSynthesis.error}` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildFinalPolishPreview(taskState: TaskState): string {
-  const skippedNotice = taskState.finalPolish.status === 'skipped'
-    ? buildDualStateNotice('polish-novel')
-    : null;
-
-  return [
-    skippedNotice,
-    `统稿正文：${extractPreview(taskState.finalPolish.markdownBody || taskState.fullNovel, 260)}`,
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildFinalPolishDetail(taskState: TaskState): string {
-  const skippedNotice = taskState.finalPolish.status === 'skipped'
-    ? buildDualStateNotice('polish-novel')
-    : null;
-
-  return [
-    skippedNotice,
-    taskState.finalPolish.markdownBody || taskState.fullNovel || '尚未生成统稿正文',
-    taskState.finalPolish.error ? `错误：${taskState.finalPolish.error}` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildSectionPreview(section: TaskState['novelSections'][number]): string {
-  return [
-    `正文预览：${extractPreview(section.markdownBody, 220)}`,
-    section.continuitySummary ? `承接摘要：${extractPreview(section.continuitySummary, 120)}` : '承接摘要：暂无',
-  ].join('\n\n');
-}
-
-function buildSectionDetail(section: TaskState['novelSections'][number]): string {
-  return [
-    `关联分块：${section.chunkIndexes.length > 0 ? section.chunkIndexes.map((index) => index + 1).join('、') : '无'}`,
-    section.markdownBody || '尚未生成正文',
-    section.continuitySummary ? `承接摘要：${section.continuitySummary}` : '',
-    section.error ? `错误：${section.error}` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-function buildTroubleshootingSummary(error?: string): string {
-  const advice = getTroubleshootingAdvice(error);
-  return advice ? `${advice.categoryLabel}：${advice.summary}` : '';
-}
-
-function getReplayActionCopy(stage: RequestStage): { buttonLabel: string; description: string } {
-  switch (stage) {
-    case 'analyze-pages':
-      return {
-        buttonLabel: '重新分析此页',
-        description: '只会补跑当前页，并把受影响的后续综合标记为待更新，不会立刻把后面的内容一起重跑。',
-      };
-    case 'synthesize-chunks':
-      return {
-        buttonLabel: '重新综合此块',
-        description: '只会重做当前分块，并把受影响的后续综合与章节写作标记为待更新，方便你确认后再继续。',
-      };
-    case 'synthesize-story':
-      return {
-        buttonLabel: '重新生成整书综合',
-        description: '只会重做整书综合，并把章节写作标记为待更新，不会立刻把正文一起重写。',
-      };
-    case 'write-sections':
-      return {
-        buttonLabel: '重新生成此节',
-        description: '只会重写当前节，并把后续章节标记为待更新，方便按顺序继续补跑。',
-      };
-    case 'polish-novel':
-      return {
-        buttonLabel: '重新全书统稿',
-        description: '只会重跑最后的全书统稿/润色阶段，不会重写前面的章节正文。',
-      };
+  switch (chunk.status) {
+    case 'processing':
+      return '这一部分正在生成中，完成后会在这里显示摘要。';
+    case 'error':
+      return '这一部分生成失败，可点“详情”查看原因。';
+    case 'success':
+      return '这一部分已生成，可点“详情”查看内容。';
     default:
-      return {
-        buttonLabel: '重新处理',
-        description: '会只重做当前选中项，并保留前面不受影响的结果。',
-      };
+      return splitDraftMode
+        ? '这一部分开始生成后，会在这里显示摘要。'
+        : '等待生成后显示摘要。';
   }
 }
 
-function canRegenerateItem(
-  item: ActiveItem | null,
-  taskStatus: TaskState['status'],
-  onRegenerateItem?: (stage: RequestStage, itemIndex: number) => Promise<void>
-): item is ActiveItem {
-  return Boolean(
-    item
-    && (item.status !== 'pending' || item.stage === 'polish-novel')
-    && item.status !== 'processing'
-    && onRegenerateItem
-    && taskStatus !== 'running'
-    && taskStatus !== 'preparing'
-  );
+function buildDialogueLineText(
+  speaker: string,
+  text: string,
+  marker = ''
+): string {
+  return `${speaker}${marker}：${text}`;
 }
 
-function buildStageItems(taskState: TaskState, stage: RequestStage): ActiveItem[] {
+function buildResolutionDetail(
+  chunk: TaskState['chunkSyntheses'][number]
+): string {
+  if (chunk.dialogueResolutions.length === 0) {
+    return '无';
+  }
+
+  return chunk.dialogueResolutions.map((resolution) => {
+    const evidence = resolution.speakerEvidence?.trim()
+      ? `（依据：${resolution.speakerEvidence.trim()}）`
+      : '';
+    return `第 ${resolution.pageNumber} 页 #${resolution.lineIndex} ${buildDialogueLineText(
+      resolution.speaker,
+      resolution.text
+    )}${evidence}`;
+  }).join('\n');
+}
+
+function buildPageItem(taskState: TaskState): ProgressItem[] {
+  const dialogueResolutionMap = createDialogueResolutionMap(taskState.chunkSyntheses);
+  const batchSizeByIndex = taskState.pageAnalyses.reduce<Map<number, number>>((result, page) => {
+    result.set(page.analysisBatchIndex, (result.get(page.analysisBatchIndex) || 0) + 1);
+    return result;
+  }, new Map());
+
+  return taskState.pageAnalyses.map((page) => {
+    const resolvedDialogue = applyDialogueResolutionMap(
+      page.pageNumber,
+      page.dialogue,
+      dialogueResolutionMap
+    );
+    const correctedLineCount = resolvedDialogue.reduce((count, line, index) => (
+      page.dialogue[index]?.speaker?.trim() !== line.speaker.trim()
+        ? count + 1
+        : count
+    ), 0);
+
+    return {
+      key: `page-${page.index}`,
+      stage: 'analyze-pages',
+      itemIndex: page.index,
+      batchIndex: page.analysisBatchIndex,
+      runtimeScope: (batchSizeByIndex.get(page.analysisBatchIndex) || 0) > 1 ? 'batch' : 'item',
+      label: `第 ${page.pageNumber} 页`,
+      meta: [page.location, page.timeHint].filter(Boolean).join(' / ') || '等待提取场景信息',
+      status: page.status,
+      runtimeMs: page.runtimeMs,
+      runtimeStartedAt: page.runtimeStartedAt,
+      error: page.error,
+      preview: [
+        `摘要：${page.summary || '暂无'}`,
+        `关键事件：${joinValues(page.keyEvents)}`,
+        `角色：${joinValues(page.characters.map((character) => character.name))}`,
+        correctedLineCount > 0 ? `对白修正：${correctedLineCount} 条` : '',
+      ].join('\n'),
+      detail: [
+        `页码：第 ${page.pageNumber} 页`,
+        `摘要：${page.summary || '暂无'}`,
+        `地点：${page.location || '未知'}`,
+        `时间：${page.timeHint || '未知'}`,
+        `关键事件：${joinValues(page.keyEvents)}`,
+        `对白：${resolvedDialogue.map((line, index) => {
+          const originalSpeaker = page.dialogue[index]?.speaker?.trim() || '';
+          const marker = originalSpeaker !== line.speaker.trim() ? '（修正）' : '';
+          return buildDialogueLineText(line.speaker, line.text, marker);
+        }).join('\n') || '无'}`,
+        `画面文字：${page.visualText.join('\n') || '无'}`,
+        correctedLineCount > 0 ? `已应用块级对白归属修正：${correctedLineCount} 条` : '',
+        page.error ? `错误：${page.error}` : '',
+      ].filter(Boolean).join('\n\n'),
+    };
+  });
+}
+
+function buildChunkItems(taskState: TaskState): ProgressItem[] {
+  return taskState.chunkSyntheses.map((chunk) => {
+    const label = chunk.title || (isSplitDraftMode(taskState) ? `第 ${chunk.index + 1} 部分` : `第 ${chunk.index + 1} 块`);
+    return {
+      key: `chunk-${chunk.index}`,
+      stage: 'synthesize-chunks',
+      itemIndex: chunk.index,
+      label,
+      meta: `${formatPageRange(chunk.pageNumbers)} · ${chunk.pageNumbers.length} 页`,
+      status: chunk.status,
+      runtimeMs: chunk.runtimeMs,
+      runtimeStartedAt: chunk.runtimeStartedAt,
+      error: chunk.error,
+      preview: buildChunkPreview(chunk, isSplitDraftMode(taskState)),
+      detail: [
+        `范围：${formatPageRange(chunk.pageNumbers)}`,
+        `摘要：${chunk.summary || '暂无'}`,
+        chunk.draftText ? `分段草稿：\n${chunk.draftText}` : '',
+        `推进：${joinValues(chunk.keyDevelopments)}`,
+        `对白归属修正：${buildResolutionDetail(chunk)}`,
+        `承接：${chunk.continuitySummary || '暂无'}`,
+        chunk.error ? `错误：${chunk.error}` : '',
+      ].filter(Boolean).join('\n\n'),
+    };
+  });
+}
+
+function buildStoryItem(taskState: TaskState): ProgressItem[] {
+  const splitDraftMode = isSplitDraftMode(taskState);
+  const sceneCount = taskState.globalSynthesis.sceneOutline.length;
+  const outlineDetail = taskState.globalSynthesis.sceneOutline.map((scene) => {
+    const scopeLabel = splitDraftMode
+      ? ''
+      : `（分块 ${scene.chunkIndexes.map((index) => index + 1).join(' / ')}）`;
+    return `\n- ${scene.title}${scopeLabel}`;
+  }).join('');
+
+  return [{
+    key: 'story-synthesis',
+    stage: 'synthesize-story',
+    itemIndex: 0,
+    label: '整书综合',
+    meta: splitDraftMode
+      ? `${taskState.pageAnalyses.length} 页逐页分析 / ${sceneCount} 个场景`
+      : `${taskState.chunkSyntheses.length} 个分块 / ${sceneCount} 个场景`,
+    status: taskState.globalSynthesis.status,
+    runtimeMs: taskState.globalSynthesis.runtimeMs,
+    runtimeStartedAt: taskState.globalSynthesis.runtimeStartedAt,
+    error: taskState.globalSynthesis.error,
+    preview: [
+      `故事概览：${extractPreview(taskState.globalSynthesis.storyOverview, 220)}`,
+      `人物关系：${extractPreview(taskState.globalSynthesis.characterGuide, 180)}`,
+      `写作约束：${joinValues(taskState.globalSynthesis.writingConstraints)}`,
+    ].join('\n'),
+    detail: [
+      `故事概览：${taskState.globalSynthesis.storyOverview || '暂无'}`,
+      `世界说明：${taskState.globalSynthesis.worldGuide || '暂无'}`,
+      `人物说明：${taskState.globalSynthesis.characterGuide || '暂无'}`,
+      `场景大纲：${
+        outlineDetail
+        || '\n- 暂无'
+      }`,
+      `写作约束：${joinValues(taskState.globalSynthesis.writingConstraints)}`,
+      taskState.globalSynthesis.error ? `错误：${taskState.globalSynthesis.error}` : '',
+    ].filter(Boolean).join('\n\n'),
+  }];
+}
+
+function buildSectionItems(taskState: TaskState): ProgressItem[] {
+  const preparation: ProgressItem = {
+    key: 'writing-preparation',
+    stage: 'write-sections',
+    itemIndex: -1,
+    label: '写作前全书统稿',
+    meta: taskState.writingPreparation.voiceGuide?.trim() ? '已生成写作前统稿指引' : '等待生成写作前统稿指引',
+    status: taskState.writingPreparation.status,
+    runtimeMs: taskState.writingPreparation.runtimeMs,
+    runtimeStartedAt: taskState.writingPreparation.runtimeStartedAt,
+    error: taskState.writingPreparation.error,
+    preview: extractPreview(taskState.writingPreparation.voiceGuide, 240),
+    detail: taskState.writingPreparation.voiceGuide || '暂无写作指引',
+  };
+
+  const sections = taskState.novelSections.map((section) => ({
+    key: `section-${section.index}`,
+    stage: 'write-sections' as const,
+    itemIndex: section.index,
+    label: section.title || `第 ${section.index + 1} 节`,
+    meta: isSplitDraftMode(taskState)
+      ? `关联 ${section.chunkIndexes.length} 个场景单元`
+      : `关联 ${section.chunkIndexes.length} 个分块`,
+    status: section.status,
+    runtimeMs: section.runtimeMs,
+    runtimeStartedAt: section.runtimeStartedAt,
+    error: section.error,
+    preview: [
+      `正文：${extractPreview(section.markdownBody, 220)}`,
+      section.continuitySummary ? `承接：${extractPreview(section.continuitySummary, 120)}` : '',
+    ].filter(Boolean).join('\n'),
+    detail: [
+      section.markdownBody || '暂无正文',
+      section.continuitySummary ? `承接摘要：${section.continuitySummary}` : '',
+      section.error ? `错误：${section.error}` : '',
+    ].filter(Boolean).join('\n\n'),
+  }));
+
+  return [preparation, ...sections];
+}
+
+function buildPolishItem(taskState: TaskState): ProgressItem[] {
+  const body = taskState.finalPolish.markdownBody || '';
+  return [{
+    key: 'final-polish',
+    stage: 'polish-novel',
+    itemIndex: 0,
+    label: '全书润色',
+    meta: body.trim() ? '已生成润色结果' : '等待全书润色',
+    status: taskState.finalPolish.status,
+    runtimeMs: taskState.finalPolish.runtimeMs,
+    runtimeStartedAt: taskState.finalPolish.runtimeStartedAt,
+    error: taskState.finalPolish.error,
+    preview: extractPreview(body, 280),
+    detail: [
+      body || '暂无润色正文',
+      taskState.finalPolish.error ? `错误：${taskState.finalPolish.error}` : '',
+    ].filter(Boolean).join('\n\n'),
+  }];
+}
+
+function buildStageItems(taskState: TaskState, stage: RequestStage): ProgressItem[] {
   switch (stage) {
     case 'analyze-pages':
-      return taskState.pageAnalyses.map((page) => ({
-        key: `page-${page.index}`,
-        stage,
-        itemIndex: page.index,
-        label: `第 ${page.pageNumber} 页`,
-        meta: buildPageMeta(page),
-        status: page.status,
-        error: page.error,
-        detailTitle: `第 ${page.pageNumber} 页详情`,
-        detailContent: buildPageDetail(page),
-        previewContent: buildPagePreview(page),
-      }));
+      return buildPageItem(taskState);
     case 'synthesize-chunks':
-      return taskState.chunkSyntheses.map((chunk) => ({
-        key: `chunk-${chunk.index}`,
-        stage,
-        itemIndex: chunk.index,
-        label: chunk.title || `第 ${chunk.index + 1} 块`,
-        meta: `${formatPageRange(chunk.pageNumbers)} · ${chunk.pageNumbers.length} 页`,
-        status: chunk.status,
-        error: chunk.error,
-        detailTitle: chunk.title || `第 ${chunk.index + 1} 块`,
-        detailContent: buildChunkDetail(chunk),
-        previewContent: buildChunkPreview(chunk),
-      }));
+      if (isSplitDraftMode(taskState)) {
+        return [];
+      }
+      return buildChunkItems(taskState);
     case 'synthesize-story':
-      return [
-        {
-          key: 'story-synthesis',
-          stage,
-          itemIndex: 0,
-          label: '整书综合',
-          meta: `${taskState.chunkSyntheses.length} 个分块 · ${taskState.globalSynthesis.sceneOutline.length} 个场景`,
-          status: taskState.globalSynthesis.status,
-          error: taskState.globalSynthesis.error,
-          detailTitle: '整书综合详情',
-          detailContent: buildStoryDetail(taskState),
-          previewContent: buildStoryPreview(taskState),
-        },
-      ];
+      return buildStoryItem(taskState);
     case 'write-sections':
-      return taskState.novelSections.map((section) => ({
-        key: `section-${section.index}`,
-        stage,
-        itemIndex: section.index,
-        label: section.title || `第 ${section.index + 1} 节`,
-        meta: `关联 ${section.chunkIndexes.length} 个分块`,
-        status: section.status,
-        error: section.error,
-        detailTitle: section.title || `第 ${section.index + 1} 节`,
-        detailContent: buildSectionDetail(section),
-        previewContent: buildSectionPreview(section),
-      }));
+      return buildSectionItems(taskState);
     case 'polish-novel':
-      return [
-        {
-          key: 'final-polish',
-          stage,
-          itemIndex: 0,
-          label: '全书统稿 / 润色',
-          meta: taskState.finalPolish.markdownBody?.trim()
-            ? '已生成最终稿'
-            : '基于章节正文做全书层面的统一润色',
-          status: taskState.finalPolish.status,
-          error: taskState.finalPolish.error,
-          detailTitle: '全书统稿详情',
-          detailContent: buildFinalPolishDetail(taskState),
-          previewContent: buildFinalPolishPreview(taskState),
-        },
-      ];
+      return buildPolishItem(taskState);
     default:
       return [];
   }
 }
 
-function buildStagePreview(taskState: TaskState, stage: RequestStage): StagePreview {
-  const items = buildStageItems(taskState, stage);
-
-  switch (stage) {
-    case 'analyze-pages':
-      return {
-        stage,
-        title: '逐页分析预览',
-        description: '查看每一页抽取出的摘要、对白、角色和画面文字。',
-        emptyText: '逐页分析完成后，这里会显示每页的预览。',
-        items,
-      };
-    case 'synthesize-chunks':
-      return {
-        stage,
-        title: '分块综合预览',
-        description: '查看每个分块的剧情摘要、推进点和承接信息。',
-        emptyText: '分块综合完成后，这里会显示每个分块的预览。',
-        items,
-      };
+function buildEditablePayload(taskState: TaskState, item: ProgressItem): unknown {
+  switch (item.stage) {
+    case 'analyze-pages': {
+      const page = taskState.pageAnalyses[item.itemIndex];
+      return page
+        ? {
+            summary: page.summary || '',
+            location: page.location || '未知',
+            timeHint: page.timeHint || '未知',
+            keyEvents: [...page.keyEvents],
+            dialogue: page.dialogue.map((line) => ({ ...line })),
+            narrationText: [...page.narrationText],
+            visualText: [...page.visualText],
+            characters: page.characters.map((character) => ({
+              ...character,
+              traits: [...character.traits],
+              relationshipHints: [...character.relationshipHints],
+              evidence: [...character.evidence],
+            })),
+          }
+        : {};
+    }
+    case 'synthesize-chunks': {
+      const chunk = taskState.chunkSyntheses[item.itemIndex];
+      return chunk
+        ? {
+            title: chunk.title || '',
+            summary: chunk.summary || '',
+            draftText: chunk.draftText || '',
+            keyDevelopments: [...chunk.keyDevelopments],
+            dialogueResolutions: chunk.dialogueResolutions.map((resolution) => ({ ...resolution })),
+            continuitySummary: chunk.continuitySummary || '',
+          }
+        : {};
+    }
     case 'synthesize-story':
       return {
-        stage,
-        title: '整书综合预览',
-        description: '查看整书级的故事概览、人物关系和场景大纲。',
-        emptyText: '整书综合完成后，这里会显示全书预览。',
-        items,
+        storyOverview: taskState.globalSynthesis.storyOverview || '',
+        worldGuide: taskState.globalSynthesis.worldGuide || '',
+        characterGuide: taskState.globalSynthesis.characterGuide || '',
+        sceneOutline: taskState.globalSynthesis.sceneOutline.map((scene) => ({
+          ...scene,
+          chunkIndexes: [...scene.chunkIndexes],
+        })),
+        writingConstraints: [...taskState.globalSynthesis.writingConstraints],
       };
     case 'write-sections':
-      return {
-        stage,
-        title: '章节写作预览',
-        description: '查看每个章节的正文片段和承接摘要。',
-        emptyText: '章节写作开始后，这里会显示章节预览。',
-        items,
-      };
+      if (item.itemIndex < 0) {
+        return {
+          voiceGuide: taskState.writingPreparation.voiceGuide || '',
+        };
+      }
+
+      return taskState.novelSections[item.itemIndex]
+        ? {
+            title: taskState.novelSections[item.itemIndex].title || '',
+            markdownBody: taskState.novelSections[item.itemIndex].markdownBody || '',
+            continuitySummary: taskState.novelSections[item.itemIndex].continuitySummary || '',
+          }
+        : {};
     case 'polish-novel':
       return {
-        stage,
-        title: '全书统稿预览',
-        description: '查看最终统稿后的全书正文，或确认当前是否跳过了最后统稿阶段。',
-        emptyText: '启用全书统稿后，这里会显示最终稿预览。',
-        items,
+        markdownBody: taskState.finalPolish.markdownBody || '',
+        voiceGuide: taskState.finalPolish.voiceGuide || '',
       };
     default:
-      return {
-        stage,
-        title: '阶段预览',
-        description: '',
-        emptyText: '暂无内容。',
-        items,
-      };
+      return {};
   }
 }
 
-function getCurrentItemsStage(stage: PipelineStage): RequestStage {
-  return stage === 'idle' ? 'analyze-pages' : stage;
+function getEditDescription(item: ProgressItem): string {
+  switch (item.stage) {
+    case 'analyze-pages':
+      return '修改这页的识别结果。保持 JSON 结构，只改需要的字段即可。';
+    case 'synthesize-chunks':
+      return '修改这一块的综合结果。保存后会刷新整书综合及后续阶段。';
+    case 'synthesize-story':
+      return '修改整书综合。若 sceneOutline 有变化，写作前统稿与后续章节会按新大纲重新刷新。';
+    case 'write-sections':
+      return item.itemIndex < 0
+        ? '修改写作前统稿。保存后后续章节会标记为待刷新。'
+        : '修改章节内容。保存后后续章节与终稿会重新衔接。';
+    case 'polish-novel':
+      return '修改最终润色稿。保存后会直接更新右侧预览。';
+    default:
+      return '修改当前内容。';
+  }
 }
 
-export function ProgressPanel({ taskState, onRegenerateItem }: ProgressPanelProps) {
-  const [selectedItem, setSelectedItem] = useState<ActiveItem | null>(null);
+function buildStageCards(taskState: TaskState): StageCard[] {
+  const splitDraftMode = isSplitDraftMode(taskState);
+  const cards: StageCard[] = [];
+
+  cards.push({
+    stage: 'analyze-pages',
+    title: '逐页分析',
+    value: `${countCompleted(taskState.pageAnalyses)} / ${taskState.pageAnalyses.length}`,
+    hint: splitDraftMode ? '整书综合会直接使用这些逐页结果' : '查看每页识别结果',
+  });
+
+  if (!splitDraftMode) {
+    cards.push({
+      stage: 'synthesize-chunks',
+      title: '分块综合',
+      value: `${countCompleted(taskState.chunkSyntheses)} / ${taskState.chunkSyntheses.length}`,
+      hint: '查看每一块的综合结果',
+    });
+  }
+
+  cards.push({
+    stage: 'synthesize-story',
+    title: '整书综合',
+    value: statusLabel(taskState.globalSynthesis.status),
+    secondary: taskState.globalSynthesis.sceneOutline.length > 0
+      ? `已生成 ${taskState.globalSynthesis.sceneOutline.length} 个场景`
+      : undefined,
+    hint: splitDraftMode ? '基于逐页分析直接做整书综合' : '查看全书故事综合',
+  });
+
+  cards.push({
+    stage: 'write-sections',
+    title: '章节写作',
+    value: `${countCompleted(taskState.novelSections)} / ${taskState.novelSections.length}`,
+    secondary: taskState.writingPreparation.voiceGuide?.trim() ? '写作前全书统稿已完成' : undefined,
+    hint: '查看各章节正文',
+  });
+
+  if (taskState.config.enableFinalPolish) {
+    cards.push({
+      stage: 'polish-novel',
+      title: '全书润色',
+      value: statusLabel(taskState.finalPolish.status),
+      hint: '查看润色结果',
+    });
+  }
+
+  return cards;
+}
+
+function canRegenerate(
+  item: ProgressItem | null,
+  taskState: TaskState,
+  onRegenerateItem?: (stage: RequestStage, itemIndex: number) => Promise<void>
+): item is ProgressItem {
+  const isReplayablePreparation = item?.stage === 'write-sections' && item.itemIndex === -1;
+
+  return Boolean(
+    item
+    && (item.itemIndex >= 0 || isReplayablePreparation)
+    && item.status !== 'processing'
+    && taskState.status !== 'running'
+    && taskState.status !== 'preparing'
+    && onRegenerateItem
+  );
+}
+
+function getRegenerateActionLabel(item: ProgressItem): string {
+  if (item.stage === 'write-sections' && item.itemIndex === -1 && item.status === 'pending') {
+    return '开始';
+  }
+
+  return '重跑';
+}
+
+function canEditItem(
+  item: ProgressItem | null,
+  taskState: TaskState,
+  onUpdateItem?: (stage: RequestStage, itemIndex: number, value: unknown) => Promise<void>
+): item is ProgressItem {
+  return Boolean(
+    item
+    && item.status !== 'processing'
+    && taskState.status !== 'running'
+    && taskState.status !== 'preparing'
+    && onUpdateItem
+  );
+}
+
+export function ProgressPanel({ taskState, onRegenerateItem, onUpdateItem }: ProgressPanelProps) {
   const [selectedStage, setSelectedStage] = useState<RequestStage | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  const [regeneratingItemKey, setRegeneratingItemKey] = useState<string | null>(null);
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const [expandedStagePreviewKeys, setExpandedStagePreviewKeys] = useState<string[]>([]);
-  const [detailReturnStage, setDetailReturnStage] = useState<RequestStage | null>(null);
+  const [selectedItem, setSelectedItem] = useState<ProgressItem | null>(null);
+  const [editingItem, setEditingItem] = useState<ProgressItem | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
+  const [anchoredItemKey, setAnchoredItemKey] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingRestoreScrollTopRef = useRef<number | null>(null);
+  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const stageCards = useMemo(() => buildStageCards(taskState), [taskState]);
+  const availableStages = useMemo(() => stageCards.map((card) => card.stage), [stageCards]);
 
   useEffect(() => {
-    if (taskState.status !== 'running' || !taskState.lastAIRequest?.sentAt) {
+    if (!selectedStage || !availableStages.includes(selectedStage)) {
+      setSelectedStage(getDisplayStage(taskState));
+    }
+  }, [availableStages, selectedStage, taskState]);
+
+  useEffect(() => {
+    if (!hasAnyItemRuntimeInProgress(taskState)) {
       return;
     }
 
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [taskState.lastAIRequest?.sentAt, taskState.status]);
+    setNowMs(Date.now());
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
 
-  useEffect(() => {
-    setSummaryExpanded(false);
-  }, [taskState.globalSynthesis.storyOverview, taskState.memory.globalSummary]);
+    return () => window.clearInterval(timerId);
+  }, [taskState]);
 
-  useEffect(() => {
-    setExpandedStagePreviewKeys([]);
-  }, [selectedStage]);
+  const displayStage = selectedStage || getDisplayStage(taskState);
+  const activeStageItems = useMemo(() => (
+    taskState.currentStage === 'idle' ? [] : buildStageItems(taskState, taskState.currentStage)
+  ), [taskState]);
+  const items = useMemo(() => buildStageItems(taskState, displayStage), [displayStage, taskState]);
+  const useCompactChunkCards = isSplitDraftMode(taskState) && displayStage === 'synthesize-chunks';
+  const useDenseListLayout = useCompactChunkCards || items.length > 1;
+  const activeRuntimeItem = activeStageItems.find((item) => item.status === 'processing') || null;
+  const primaryProcessingPageKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const seenBatchIndexes = new Set<number>();
 
-  const totalSections = taskState.novelSections.length > 0
-    ? taskState.novelSections.length
-    : taskState.chunkSyntheses.length;
-  const finalPolishUnitCount = taskState.config.enableFinalPolish ? 1 : 0;
-  const totalUnits = taskState.pageAnalyses.length + taskState.chunkSyntheses.length + 1 + totalSections + finalPolishUnitCount;
+    taskState.pageAnalyses.forEach((page) => {
+      if (page.status !== 'processing' || seenBatchIndexes.has(page.analysisBatchIndex)) {
+        return;
+      }
+
+      seenBatchIndexes.add(page.analysisBatchIndex);
+      keys.add(`page-${page.index}`);
+    });
+
+    return keys;
+  }, [taskState.pageAnalyses]);
+  const activeRuntimeDescriptor = useMemo(() => {
+    if (taskState.currentStage === 'analyze-pages') {
+      const processingPages = taskState.pageAnalyses.filter((page) => page.status === 'processing');
+      if (processingPages.length > 0) {
+        const processingBatches = Array.from(
+          processingPages.reduce<Map<number, typeof processingPages>>((result, page) => {
+            const existingPages = result.get(page.analysisBatchIndex);
+            if (existingPages) {
+              existingPages.push(page);
+            } else {
+              result.set(page.analysisBatchIndex, [page]);
+            }
+            return result;
+          }, new Map()).entries()
+        ).sort(([leftBatchIndex, leftPages], [rightBatchIndex, rightPages]) => {
+          const leftStartedAtMs = Date.parse(leftPages[0]?.runtimeStartedAt || '');
+          const rightStartedAtMs = Date.parse(rightPages[0]?.runtimeStartedAt || '');
+          const hasLeftStartedAt = Number.isFinite(leftStartedAtMs);
+          const hasRightStartedAt = Number.isFinite(rightStartedAtMs);
+
+          if (hasLeftStartedAt && hasRightStartedAt && leftStartedAtMs !== rightStartedAtMs) {
+            return leftStartedAtMs - rightStartedAtMs;
+          }
+
+          if (hasLeftStartedAt !== hasRightStartedAt) {
+            return hasLeftStartedAt ? -1 : 1;
+          }
+
+          return leftBatchIndex - rightBatchIndex;
+        });
+        const batchPages = processingBatches[0]?.[1] || [];
+        const primaryPage = batchPages[0];
+        const firstPageNumber = batchPages[0]?.pageNumber ?? primaryPage?.pageNumber;
+        const lastPageNumber = batchPages[batchPages.length - 1]?.pageNumber ?? primaryPage?.pageNumber;
+        const runtimeLabel = primaryPage
+          ? formatRuntime(getLiveRuntimeMs(primaryPage.runtimeMs, primaryPage.runtimeStartedAt, nowMs))
+          : null;
+
+        return {
+          label: batchPages.length > 1
+            ? `当前批次：第 ${firstPageNumber}-${lastPageNumber} 页`
+            : primaryPage
+              ? `当前页：第 ${primaryPage.pageNumber} 页`
+              : '当前项',
+          runtimeLabel,
+        };
+      }
+    }
+
+    return activeRuntimeItem
+      ? {
+          label: `当前项：${activeRuntimeItem.label}`,
+          runtimeLabel: formatRuntime(getLiveRuntimeMs(activeRuntimeItem.runtimeMs, activeRuntimeItem.runtimeStartedAt, nowMs)),
+        }
+      : null;
+  }, [activeRuntimeItem, nowMs, taskState.currentStage, taskState.pageAnalyses]);
+
+  const includeChunkStage = !isSplitDraftMode(taskState);
+  const totalUnits = taskState.pageAnalyses.length
+    + (includeChunkStage ? taskState.chunkSyntheses.length : 0)
+    + 1
+    + (taskState.novelSections.length > 0 ? 1 : 0)
+    + taskState.novelSections.length
+    + (taskState.config.enableFinalPolish ? 1 : 0);
   const completedUnits = countCompleted(taskState.pageAnalyses)
-    + countCompleted(taskState.chunkSyntheses)
-    + (taskState.globalSynthesis.status === 'success' || taskState.globalSynthesis.status === 'skipped' ? 1 : 0)
+    + (includeChunkStage ? countCompleted(taskState.chunkSyntheses) : 0)
+    + (isCompletedStatus(taskState.globalSynthesis.status, taskState.globalSynthesis.error) ? 1 : 0)
+    + (
+      taskState.novelSections.length > 0
+      && isCompletedStatus(taskState.writingPreparation.status, taskState.writingPreparation.error)
+        ? 1
+        : 0
+    )
     + countCompleted(taskState.novelSections)
     + (
       taskState.config.enableFinalPolish
-        && (taskState.finalPolish.status === 'success' || taskState.finalPolish.status === 'skipped')
+      && isCompletedStatus(taskState.finalPolish.status, taskState.finalPolish.error)
         ? 1
         : 0
     );
   const progress = totalUnits > 0 ? (completedUnits / totalUnits) * 100 : 0;
 
-  const requestElapsedMs = (() => {
-    if (taskState.status !== 'running' || !taskState.lastAIRequest?.sentAt) {
-      return 0;
+  const currentErrorItem = items.find((item) => item.status === 'error' && item.error);
+  const currentErrorAdvice = currentErrorItem?.error ? getTroubleshootingAdvice(currentErrorItem.error) : null;
+
+  useEffect(() => {
+    if (!anchoredItemKey) {
+      return;
     }
 
-    const startedAt = Date.parse(taskState.lastAIRequest.sentAt);
-    if (Number.isNaN(startedAt)) {
-      return 0;
+    if (!items.some((item) => item.key === anchoredItemKey)) {
+      setAnchoredItemKey(null);
+    }
+  }, [anchoredItemKey, items]);
+
+  useEffect(() => {
+    if (pendingRestoreScrollTopRef.current === null) {
+      return;
     }
 
-    return Math.max(0, now - startedAt);
-  })();
-
-  const requestHint = (() => {
-    if (!requestElapsedMs || !taskState.lastAIRequest) {
-      return null;
-    }
-
-    if (requestElapsedMs >= 90000) {
-      return {
-        tone: 'destructive' as const,
-        text: '当前请求已经明显偏慢，可能是模型排队、代理容量不足或上游卡住。可考虑暂停后重试或跳过。',
-      };
-    }
-
-    if (requestElapsedMs >= 45000) {
-      return {
-        tone: 'warning' as const,
-        text: '当前请求偏慢，但仍可能成功返回。建议先继续等待一会，再决定是否暂停处理。',
-      };
-    }
-
-    if (requestElapsedMs >= 20000) {
-      return {
-        tone: 'muted' as const,
-        text: '当前请求耗时比平时长，正在等待模型返回。',
-      };
-    }
-
-    return null;
-  })();
-
-  const getItemStatusPresentation = (item: ActiveItem): StatusPresentation => {
-    const hasFallbackContent = item.stage === 'synthesize-story'
-      ? Boolean(taskState.globalSynthesis.storyOverview?.trim())
-      : item.stage === 'polish-novel'
-        ? Boolean((taskState.finalPolish.markdownBody || taskState.fullNovel || '').trim())
-        : false;
-
-    return getStatusPresentation(item.status, {
-      stage: item.stage,
-      hasFallbackContent,
+    const nextScrollTop = pendingRestoreScrollTopRef.current;
+    const restoreId = window.requestAnimationFrame(() => {
+      if (listScrollRef.current && nextScrollTop !== null) {
+        listScrollRef.current.scrollTop = nextScrollTop;
+      }
+      pendingRestoreScrollTopRef.current = null;
     });
-  };
 
-  const globalSynthesisStatus = getStatusPresentation(taskState.globalSynthesis.status, {
-    stage: 'synthesize-story',
-    hasFallbackContent: Boolean(taskState.globalSynthesis.storyOverview?.trim()),
-  });
-  const finalPolishStatus = getStatusPresentation(taskState.finalPolish.status, {
-    stage: 'polish-novel',
-    hasFallbackContent: Boolean((taskState.finalPolish.markdownBody || taskState.fullNovel || '').trim()),
-  });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [items, regeneratingKey]);
 
-  const stageCards: Array<{ stage: RequestStage; title: string; value: string; hint: string; secondary?: string }> = [
-    {
-      stage: 'analyze-pages',
-      title: '逐页分析',
-      value: `${countCompleted(taskState.pageAnalyses)} / ${taskState.pageAnalyses.length}`,
-      hint: '点击查看分页预览',
-    },
-    {
-      stage: 'synthesize-chunks',
-      title: '分块综合',
-      value: `${countCompleted(taskState.chunkSyntheses)} / ${taskState.chunkSyntheses.length}`,
-      hint: '点击查看分块预览',
-    },
-    {
-      stage: 'synthesize-story',
-      title: '整书综合',
-      value: globalSynthesisStatus.compactLabel,
-      secondary: globalSynthesisStatus.secondaryLabel,
-      hint: '点击查看全书预览',
-    },
-    {
-      stage: 'write-sections',
-      title: '章节写作',
-      value: `${countCompleted(taskState.novelSections)} / ${taskState.novelSections.length}`,
-      hint: '点击查看章节预览',
-    },
-    ...(taskState.config.enableFinalPolish ? [{
-      stage: 'polish-novel' as const,
-      title: '全书统稿',
-      value: finalPolishStatus.compactLabel,
-      secondary: finalPolishStatus.secondaryLabel,
-      hint: '点击查看最终稿预览',
-    }] : []),
-  ];
-  const activeItems = buildStageItems(taskState, getCurrentItemsStage(taskState.currentStage));
-  const activeErrorItem = activeItems.find((item) => item.status === 'error' && item.error);
-  const activeErrorAdvice = activeErrorItem?.error ? getTroubleshootingAdvice(activeErrorItem.error) : null;
-  const selectedStagePreview = selectedStage ? buildStagePreview(taskState, selectedStage) : null;
-  const selectedItemAdvice = selectedItem?.error ? getTroubleshootingAdvice(selectedItem.error) : null;
-  const selectedItemStatusPresentation = selectedItem ? getItemStatusPresentation(selectedItem) : null;
-  const canRegenerateSelectedItem = canRegenerateItem(selectedItem, taskState.status, onRegenerateItem);
-  const selectedItemReplayAction = selectedItem ? getReplayActionCopy(selectedItem.stage) : null;
-  const summaryTitle = taskState.globalSynthesis.storyOverview ? '全书概览' : (
-    taskState.memory.globalSummary ? '当前剧情摘要' : null
-  );
-  const summaryContent = taskState.globalSynthesis.storyOverview || taskState.memory.globalSummary || '';
-
-  const handleRegenerateItem = async () => {
-    if (!selectedItem || !onRegenerateItem) {
+  useEffect(() => {
+    if (!anchoredItemKey || regeneratingKey) {
       return;
     }
 
-    setRegeneratingItemKey(selectedItem.key);
+    const target = itemRefs.current[anchoredItemKey];
+    if (!target) {
+      return;
+    }
+
+    const scrollId = window.requestAnimationFrame(() => {
+      target.scrollIntoView({ block: 'nearest' });
+    });
+
+    return () => window.cancelAnimationFrame(scrollId);
+  }, [anchoredItemKey, items, regeneratingKey]);
+
+  const handleRegenerate = async (item: ProgressItem) => {
+    if (!onRegenerateItem) {
+      return;
+    }
+
+    pendingRestoreScrollTopRef.current = listScrollRef.current?.scrollTop ?? null;
+    setAnchoredItemKey(item.key);
+    setRegeneratingKey(item.key);
     try {
-      await onRegenerateItem(selectedItem.stage, selectedItem.itemIndex);
+      await onRegenerateItem(item.stage, item.itemIndex);
       setSelectedItem(null);
-      setDetailReturnStage(null);
     } finally {
-      setRegeneratingItemKey(null);
+      setRegeneratingKey(null);
     }
   };
 
-  const toggleStagePreviewItem = (itemKey: string) => {
-    setExpandedStagePreviewKeys((prev) => (
-      prev.includes(itemKey)
-        ? prev.filter((key) => key !== itemKey)
-        : [...prev, itemKey]
-    ));
+  const handleStartEdit = (item: ProgressItem) => {
+    setEditingItem(item);
+    setEditDraft(JSON.stringify(buildEditablePayload(taskState, item), null, 2));
+    setEditError(null);
   };
 
-  const openItemDetail = (item: ActiveItem, returnStage?: RequestStage) => {
-    setSelectedItem(item);
-    setDetailReturnStage(returnStage || null);
-  };
-
-  const closeItemDetail = () => {
-    setSelectedItem(null);
-    setDetailReturnStage(null);
-  };
-
-  const returnToStagePreview = () => {
-    if (!detailReturnStage) {
+  const handleSaveEdit = async () => {
+    if (!editingItem || !onUpdateItem) {
       return;
     }
 
-    setSelectedItem(null);
-    setSelectedStage(detailReturnStage);
-    setDetailReturnStage(null);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(editDraft);
+    } catch {
+      setEditError('请输入合法的 JSON。');
+      return;
+    }
+
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      await onUpdateItem(editingItem.stage, editingItem.itemIndex, parsed);
+      setEditingItem(null);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : '保存失败，请稍后再试。');
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   return (
-    <>
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Layers className="h-4 w-4" />
-            处理进度
-            <Badge
-              variant={
-                taskState.status === 'running'
-                  ? 'default'
-                  : taskState.status === 'completed'
-                    ? 'default'
-                    : taskState.status === 'paused'
-                      ? 'destructive'
-                      : 'secondary'
-              }
-              className="ml-auto"
+    <Card>
+      <CardHeader className="space-y-2.5 pb-4">
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="text-base">处理进度</CardTitle>
+          <Badge variant={taskState.status === 'completed' ? 'default' : 'outline'}>
+            {taskState.status === 'completed' ? '全部完成' : stageLabel(taskState.currentStage)}
+          </Badge>
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground sm:text-sm">
+            <span>{Math.round(progress)}%</span>
+            <span
+              className="max-w-[15rem] truncate text-center sm:max-w-[20rem]"
+              title={activeRuntimeDescriptor ? `${activeRuntimeDescriptor.label} · ${activeRuntimeDescriptor.runtimeLabel || '--'}` : '当前没有正在处理的条目'}
             >
-              {taskState.status === 'idle'
-                ? '就绪'
-                : taskState.status === 'preparing'
-                  ? '预处理图片'
-                  : taskState.status === 'running'
-                    ? '处理中'
-                    : taskState.status === 'paused'
-                      ? '已暂停'
-                      : taskState.status === 'completed'
-                        ? '完成'
-                        : '错误'}
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <span>{completedUnits} / {totalUnits || 0} 个阶段单元</span>
-              <span>{Math.round(progress)}%</span>
-            </div>
-            <Progress value={progress} className="h-2" />
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>当前阶段</span>
-              <span>{taskState.status === 'completed' ? '全部完成' : stageLabel(taskState.currentStage)}</span>
-            </div>
+              {activeRuntimeDescriptor ? `${activeRuntimeDescriptor.label} · ${activeRuntimeDescriptor.runtimeLabel || '--'}` : '当前项用时 --'}
+            </span>
+            <span>{completedUnits} / {totalUnits || 0}</span>
           </div>
+          <Progress value={progress} />
+        </div>
+      </CardHeader>
 
-          {taskState.status === 'running' && taskState.lastAIRequest ? (
-            <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
-                requestHint?.tone === 'destructive'
-                  ? 'border-red-200 bg-red-50 text-red-700'
-                  : requestHint?.tone === 'warning'
-                    ? 'border-amber-200 bg-amber-50 text-amber-700'
-                    : 'border-border bg-muted/20 text-muted-foreground'
+      <CardContent className="space-y-3">
+        {currentErrorItem ? (
+          <div className="rounded-lg border border-red-200 bg-red-50/70 p-2.5 text-sm">
+            <div className="min-w-0 [overflow-wrap:anywhere] font-medium text-red-700">{currentErrorItem.label}</div>
+            <div className="mt-1.5 whitespace-pre-wrap text-red-700 [overflow-wrap:anywhere]">{currentErrorItem.error}</div>
+            {currentErrorAdvice ? (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-amber-900">
+                <div className="font-medium">{currentErrorAdvice.title}</div>
+                <div className="mt-1 text-sm [overflow-wrap:anywhere]">{currentErrorAdvice.summary}</div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="grid gap-2.5 md:grid-cols-2 2xl:grid-cols-4">
+          {stageCards.map((card) => (
+            <button
+              key={card.stage}
+              type="button"
+              className={`rounded-lg border p-2.5 text-left transition ${
+                displayStage === card.stage
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-background hover:bg-muted/30'
               }`}
+              onClick={() => setSelectedStage(card.stage)}
             >
-              <div className="flex items-center gap-2 font-medium">
-                <TimerReset className="h-3.5 w-3.5" />
-                <span>当前请求：{taskState.lastAIRequest.itemLabel}</span>
-                <span className="ml-auto">{formatDuration(requestElapsedMs)}</span>
-              </div>
-              {requestHint ? (
-                <p className="mt-1 leading-relaxed">{requestHint.text}</p>
-              ) : (
-                <p className="mt-1 leading-relaxed">请求已发出，正在等待模型返回。</p>
-              )}
-            </div>
-          ) : null}
-
-          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-            {stageCards.map((card) => (
-              <button
-                key={card.stage}
-                type="button"
-                onClick={() => setSelectedStage(card.stage)}
-                className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                  taskState.currentStage === card.stage
-                    ? 'border-primary/30 bg-primary/5'
-                    : 'bg-muted/20 hover:bg-muted/40'
-                }`}
-              >
-                <div className="text-muted-foreground">{card.title}</div>
-                <div className="mt-1 font-medium">{card.value}</div>
-                {card.secondary ? (
-                  <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-amber-700">
-                    {card.secondary}
-                  </div>
-                ) : null}
-                <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <Eye className="h-3 w-3" />
-                  {card.hint}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {activeErrorItem?.error ? (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-xs text-red-700">
-              <div className="font-medium">当前失败项：{activeErrorItem.label}</div>
-              <div className="mt-1 break-words">{activeErrorItem.error}</div>
-              {activeErrorAdvice ? (
-                <div className="mt-2 space-y-1 text-amber-700">
-                  <Badge
-                    variant="outline"
-                    className="border-amber-300 bg-amber-100/80 text-[11px] text-amber-900"
-                  >
-                    {activeErrorAdvice.categoryLabel}
-                  </Badge>
-                  <div className="font-medium">{activeErrorAdvice.title}</div>
-                  <div>{activeErrorAdvice.summary}</div>
-                  <div className="space-y-1">
-                    {activeErrorAdvice.checks.map((check) => (
-                      <div key={check}>- {check}</div>
-                    ))}
-                  </div>
-                </div>
+              <div className="text-sm font-medium">{card.title}</div>
+              <div className="mt-0.5 text-base font-semibold">{card.value}</div>
+              {card.secondary ? (
+                <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{card.secondary}</div>
               ) : null}
-            </div>
-          ) : null}
+              <div className="mt-1.5 text-[11px] leading-4 text-muted-foreground">{card.hint}</div>
+            </button>
+          ))}
+        </div>
 
-          {activeItems.length > 0 ? (
-            <div className="max-h-[280px] overflow-y-auto overscroll-contain pr-2">
-              <div className="space-y-1.5">
-                {activeItems.map((item) => {
-                  const statusPresentation = getItemStatusPresentation(item);
-
-                  return (
-                    <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => openItemDetail(item)}
-                    className={`w-full rounded p-2 text-left text-sm transition-colors ${
-                      item.status === 'processing' && taskState.status === 'running'
-                        ? 'border border-primary/20 bg-primary/5'
-                        : 'hover:bg-muted/50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <ChunkStatusIcon status={item.status} />
-                      <span className="truncate">{item.label}</span>
-                      <Badge variant="outline" className="ml-auto text-xs">
-                        {statusPresentation.compactLabel}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className="truncate">{item.meta}</span>
-                      <span className="ml-auto inline-flex items-center gap-1">
-                        <Eye className="h-3 w-3" />
-                        点击查看
-                      </span>
-                    </div>
-                    {statusPresentation.secondaryLabel ? (
-                      <div className="mt-1 text-xs text-amber-700">
-                        {statusPresentation.secondaryLabel}
-                      </div>
-                    ) : null}
-                    {item.error ? (
-                      <div className="mt-1 space-y-1 text-xs">
-                        <div className="truncate text-red-500" title={item.error}>
-                          {item.error}
-                        </div>
-                        {buildTroubleshootingSummary(item.error) ? (
-                          <div className="line-clamp-2 text-amber-600">
-                            {buildTroubleshootingSummary(item.error)}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    </button>
-                  );
-                })}
+        <div className="overflow-hidden rounded-lg border">
+          <div className="flex items-center justify-between border-b px-3 py-2">
+            <div>
+              <div className="text-sm font-medium">{stageLabel(displayStage)}</div>
+              <div className="text-[11px] leading-4 text-muted-foreground">
+                {isSplitDraftMode(taskState) && displayStage === 'analyze-pages'
+                  ? '这些逐页结果会直接进入整书综合，跳过分块综合'
+                  : '点击条目可查看详情'}
               </div>
             </div>
-          ) : (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              添加图片后会在这里显示多阶段处理进度
-            </p>
-          )}
-
-          {summaryTitle && summaryContent ? (
-            <>
-              <Separator />
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setSummaryExpanded((prev) => !prev)}
-                  className="flex w-full items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40"
+          </div>
+          <div
+            ref={listScrollRef}
+            className="max-h-[min(460px,calc(100vh-19rem))] overflow-y-auto overscroll-contain"
+          >
+            <div className={useDenseListLayout ? 'space-y-2 p-2.5' : 'space-y-2.5 p-3'}>
+              {items.length === 0 ? (
+                <div className="rounded-lg border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground">
+                  当前阶段还没有可展示的内容。
+                </div>
+              ) : items.map((item) => (
+                <div
+                  key={item.key}
+                  ref={(node) => {
+                    itemRefs.current[item.key] = node;
+                  }}
+                  className={
+                    useDenseListLayout
+                      ? `rounded-lg border p-2.5 ${anchoredItemKey === item.key ? 'border-primary bg-primary/5' : ''}`
+                      : `rounded-xl border p-3 ${anchoredItemKey === item.key ? 'border-primary bg-primary/5' : ''}`
+                  }
                 >
-                  <span>{summaryTitle}</span>
-                  <span className="inline-flex items-center gap-1">
-                    {summaryExpanded ? '收起' : '展开'}
-                    {summaryExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                  </span>
-                </button>
-                {summaryExpanded ? (
-                  <p className="rounded bg-muted/50 p-2 text-xs leading-relaxed">
-                    {summaryContent}
-                  </p>
+                  <div className={useDenseListLayout ? 'flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between' : 'flex flex-col gap-2.5 sm:flex-row sm:items-start sm:justify-between'}>
+                    <div className={useDenseListLayout ? 'min-w-0 flex-1 space-y-0.5' : 'min-w-0 flex-1 space-y-1'}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusIcon status={item.status} />
+                        <span className="font-medium">{item.label}</span>
+                        <Badge variant="outline">{statusLabel(item.status)}</Badge>
+                      </div>
+                      <div className="text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">{item.meta}</div>
+                      {(item.stage !== 'analyze-pages' || item.status !== 'processing' || primaryProcessingPageKeys.has(item.key)) && formatItemRuntimeLabel(item, nowMs) ? (
+                        <div className="text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+                          {formatItemRuntimeLabel(item, nowMs)}
+                        </div>
+                      ) : null}
+                      <div
+                        className={useDenseListLayout
+                          ? 'max-h-11 overflow-hidden whitespace-pre-wrap text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]'
+                          : 'whitespace-pre-wrap text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]'}
+                      >
+                        {item.preview}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2.5"
+                        onClick={() => setSelectedItem(item)}
+                      >
+                        <Eye className="mr-1 h-3.5 w-3.5" />
+                        详情
+                      </Button>
+                      {canEditItem(item, taskState, onUpdateItem) ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-2.5"
+                          onClick={() => handleStartEdit(item)}
+                        >
+                          <Pencil className="mr-1 h-3.5 w-3.5" />
+                          修改
+                        </Button>
+                      ) : null}
+                      {canRegenerate(item, taskState, onRegenerateItem) ? (
+                        <Button
+                          size="sm"
+                        variant="outline"
+                        className="h-8 px-2.5"
+                        onClick={() => handleRegenerate(item)}
+                        disabled={regeneratingKey === item.key}
+                        title={getRegenerateActionLabel(item)}
+                      >
+                          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${regeneratingKey === item.key ? 'animate-spin' : ''}`} />
+                          重跑
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {item.error ? (
+                    <>
+                      <Separator className="my-2" />
+                      <div className="text-xs leading-5 text-red-600 whitespace-pre-wrap [overflow-wrap:anywhere]">{item.error}</div>
+                    </>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+
+      <Dialog
+        open={Boolean(editingItem)}
+        onOpenChange={(open) => {
+          if (!open && !savingEdit) {
+            setEditingItem(null);
+            setEditError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-hidden">
+          {editingItem ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{editingItem.label} · 修改</DialogTitle>
+                <div className="text-xs leading-5 text-muted-foreground">
+                  {getEditDescription(editingItem)}
+                </div>
+              </DialogHeader>
+              <div className="flex min-h-0 flex-col gap-3">
+                <Textarea
+                  value={editDraft}
+                  onChange={(event) => {
+                    setEditDraft(event.target.value);
+                    if (editError) {
+                      setEditError(null);
+                    }
+                  }}
+                  spellCheck={false}
+                  className="h-[65vh] min-h-[18rem] max-h-[38rem] resize-y overflow-y-auto font-mono text-xs leading-6 [field-sizing:fixed]"
+                />
+                <div className="text-[11px] leading-5 text-muted-foreground">
+                  保存时会校验 JSON，并把修改写回当前阶段；缺失字段会沿用原值。
+                </div>
+                {editError ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {editError}
+                  </div>
                 ) : null}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setEditingItem(null);
+                      setEditError(null);
+                    }}
+                    disabled={savingEdit}
+                  >
+                    取消
+                  </Button>
+                  <Button type="button" onClick={handleSaveEdit} disabled={savingEdit}>
+                    {savingEdit ? '保存中...' : '保存修改'}
+                  </Button>
+                </div>
               </div>
             </>
           ) : null}
-        </CardContent>
-      </Card>
-
-      <Dialog open={Boolean(selectedStagePreview)} onOpenChange={(open) => !open && setSelectedStage(null)}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>{selectedStagePreview?.title || '阶段预览'}</DialogTitle>
-            <DialogDescription>{selectedStagePreview?.description || ''}</DialogDescription>
-          </DialogHeader>
-          {selectedStagePreview && selectedStagePreview.items.length > 0 ? (
-            <ScrollArea className="h-[65vh] pr-4">
-              <div className="space-y-3">
-                {selectedStagePreview.items.map((item) => {
-                  const statusPresentation = getItemStatusPresentation(item);
-
-                  return (
-                    <div
-                    key={item.key}
-                    className={`w-full rounded-lg border p-3 text-left transition-colors ${
-                      item.status === 'processing' && taskState.status === 'running'
-                        ? 'border-primary/20 bg-primary/5'
-                        : 'bg-muted/20'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <ChunkStatusIcon status={item.status} />
-                      <span className="truncate text-sm font-medium">{item.label}</span>
-                      <Badge variant="outline" className="ml-auto text-xs">
-                        {statusPresentation.compactLabel}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{item.meta}</div>
-                    {statusPresentation.secondaryLabel ? (
-                      <div className="mt-1 text-xs text-amber-700">
-                        {statusPresentation.secondaryLabel}
-                      </div>
-                    ) : null}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2 text-xs"
-                        onClick={() => toggleStagePreviewItem(item.key)}
-                      >
-                        {expandedStagePreviewKeys.includes(item.key) ? (
-                          <ChevronUp className="mr-1 h-3.5 w-3.5" />
-                        ) : (
-                          <ChevronDown className="mr-1 h-3.5 w-3.5" />
-                        )}
-                        {expandedStagePreviewKeys.includes(item.key) ? '收起预览' : '展开预览'}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 px-2 text-xs"
-                        onClick={() => {
-                          setSelectedStage(null);
-                          openItemDetail(item, selectedStagePreview.stage);
-                        }}
-                      >
-                        <Eye className="mr-1 h-3.5 w-3.5" />
-                        查看详情
-                      </Button>
-                    </div>
-                    {expandedStagePreviewKeys.includes(item.key) ? (
-                      <>
-                        <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
-                          {item.previewContent}
-                        </p>
-                        {item.error ? (
-                          <div className="mt-2 space-y-1 text-xs">
-                            <div className="text-red-500">{item.error}</div>
-                            {buildTroubleshootingSummary(item.error) ? (
-                              <div className="text-amber-600">{buildTroubleshootingSummary(item.error)}</div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </>
-                    ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          ) : (
-            <div className="rounded-lg border bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
-              {selectedStagePreview?.emptyText || '暂无内容'}
-            </div>
-          )}
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(selectedItem)} onOpenChange={(open) => !open && closeItemDetail()}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            {detailReturnStage ? (
-              <div className="mb-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 px-2 text-xs"
-                  onClick={returnToStagePreview}
-                >
-                  <ArrowLeft className="mr-1 h-3.5 w-3.5" />
-                  返回上一步
-                </Button>
-              </div>
-            ) : null}
-            <DialogTitle>{selectedItem?.detailTitle || '详情预览'}</DialogTitle>
-            <DialogDescription>
-              {selectedItem ? `${selectedItem.meta} · ${statusLabel(selectedItem.status, { stage: selectedItem.stage })}` : ''}
-            </DialogDescription>
-          </DialogHeader>
-          {selectedItemStatusPresentation?.secondaryLabel ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {selectedItemStatusPresentation.secondaryLabel}
-            </div>
+      <Dialog open={Boolean(selectedItem)} onOpenChange={(open) => !open && setSelectedItem(null)}>
+        <DialogContent className="max-w-3xl">
+          {selectedItem ? (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="icon" onClick={() => setSelectedItem(null)}>
+                    <ArrowLeft className="h-4 w-4" />
+                  </Button>
+                  <div>
+                    <DialogTitle>{selectedItem.label}</DialogTitle>
+                    <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{selectedItem.meta}</div>
+                  </div>
+                </div>
+              </DialogHeader>
+              <ScrollArea className="max-h-[65vh] pr-4">
+                <div className="whitespace-pre-wrap text-sm leading-6 [overflow-wrap:anywhere]">{selectedItem.detail}</div>
+              </ScrollArea>
+            </>
           ) : null}
-          {selectedItemAdvice ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
-              <Badge
-                variant="outline"
-                className="border-amber-300 bg-amber-100/80 text-[11px] text-amber-900"
-              >
-                {selectedItemAdvice.categoryLabel}
-              </Badge>
-              <div className="font-medium">{selectedItemAdvice.title}</div>
-              <div className="mt-1">{selectedItemAdvice.summary}</div>
-              <div className="mt-2 space-y-1">
-                {selectedItemAdvice.checks.map((check) => (
-                  <div key={check}>- {check}</div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {canRegenerateSelectedItem && selectedItemReplayAction ? (
-            <div className="rounded-lg border bg-muted/20 px-3 py-3">
-              <div className="text-xs leading-5 text-muted-foreground">
-                {selectedItemReplayAction.description}
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-3"
-                onClick={() => {
-                  void handleRegenerateItem();
-                }}
-                disabled={regeneratingItemKey !== null}
-              >
-                {regeneratingItemKey === selectedItem?.key ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                ) : null}
-                {selectedItemReplayAction.buttonLabel}
-              </Button>
-            </div>
-          ) : null}
-          <ScrollArea className="h-[60vh] rounded-lg border bg-muted/20 p-3">
-            <pre className="whitespace-pre-wrap break-words pr-4 text-xs leading-6">
-              {selectedItem?.detailContent || '暂无内容'}
-            </pre>
-          </ScrollArea>
         </DialogContent>
       </Dialog>
-    </>
+    </Card>
   );
 }

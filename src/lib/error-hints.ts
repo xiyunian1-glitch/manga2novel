@@ -204,6 +204,20 @@ export function getTroubleshootingAdvice(error?: string | null): Troubleshooting
     );
   }
 
+  if (/不支持图片消息|无法接收 image_url|unknown variant [`"]image_url[`"]|expected [`"]text[`"]/i.test(message)) {
+    return createAdvice(
+      'model-mismatch',
+      '模型能力不匹配',
+      '当前接口或模型不支持图片输入',
+      '这一步需要把图片一起发给模型，但你现在选的接口只接受纯文本消息，所以请求一发出去就被拒了。',
+      [
+        '逐页分析这类含图片的阶段，改用支持视觉输入的模型。',
+        '如果你想继续用 DeepSeek，可以只把它放到整书综合、写作前全书统稿、章节写作、全书润色这些纯文本阶段。',
+        '最直接的做法是把图片阶段切到 Gemini，后面文本阶段再切回 DeepSeek。',
+      ]
+    );
+  }
+
   if (/timed out|timeout|deadline exceeded/i.test(message)) {
     return createAdvice(
       'timeout',

@@ -1,6 +1,7 @@
 export type APIProvider = 'compatible' | 'gemini';
 export type RequestStage = Exclude<PipelineStage, 'idle'>;
 export type WritingMode = 'faithful' | 'literary';
+export type WorkflowMode = 'page-analysis' | 'split-draft';
 
 export const REQUEST_STAGES: RequestStage[] = [
   'analyze-pages',
@@ -15,7 +16,7 @@ export const REQUEST_STAGE_LABELS: Record<RequestStage, string> = {
   'synthesize-chunks': '分块综合',
   'synthesize-story': '整书综合',
   'write-sections': '章节写作',
-  'polish-novel': '全书统稿',
+  'polish-novel': '全书润色',
 };
 
 export type StageModelConfig = Record<RequestStage, string>;
@@ -87,6 +88,11 @@ export type PipelineStage =
   | 'write-sections'
   | 'polish-novel';
 
+export interface RuntimeInfo {
+  runtimeMs: number;
+  runtimeStartedAt?: string;
+}
+
 export interface ImageChunk {
   index: number;
   images: ImageItem[];
@@ -113,7 +119,12 @@ export interface DialogueLine {
   speakerConfidence?: 'high' | 'medium' | 'low';
 }
 
-export interface PageAnalysis {
+export interface DialogueResolution extends DialogueLine {
+  pageNumber: number;
+  lineIndex: number;
+}
+
+export interface PageAnalysis extends RuntimeInfo {
   index: number;
   pageNumber: number;
   chunkIndex: number;
@@ -132,13 +143,15 @@ export interface PageAnalysis {
   retryCount: number;
 }
 
-export interface ChunkSynthesis {
+export interface ChunkSynthesis extends RuntimeInfo {
   index: number;
   pageNumbers: number[];
   status: ChunkStatus;
   title?: string;
   summary?: string;
+  draftText?: string;
   keyDevelopments: string[];
+  dialogueResolutions: DialogueResolution[];
   continuitySummary?: string;
   error?: string;
   retryCount: number;
@@ -151,7 +164,7 @@ export interface ScenePlan {
   chunkIndexes: number[];
 }
 
-export interface StorySynthesis {
+export interface StorySynthesis extends RuntimeInfo {
   status: ChunkStatus;
   storyOverview: string;
   worldGuide: string;
@@ -163,14 +176,28 @@ export interface StorySynthesis {
   retryCount: number;
 }
 
-export interface FinalPolish {
+export interface WritingPreparation extends RuntimeInfo {
   status: ChunkStatus;
-  markdownBody?: string;
+  voiceGuide: string;
   error?: string;
   retryCount: number;
 }
 
-export interface NovelSection {
+export type FinalPolishPhase = 'idle' | 'build-voice-guide' | 'polish-sections' | 'complete';
+
+export interface FinalPolish extends RuntimeInfo {
+  status: ChunkStatus;
+  markdownBody?: string;
+  voiceGuide?: string;
+  polishedSectionBodies: string[];
+  currentSectionIndex: number;
+  totalSections: number;
+  phase: FinalPolishPhase;
+  error?: string;
+  retryCount: number;
+}
+
+export interface NovelSection extends RuntimeInfo {
   index: number;
   title: string;
   chunkIndexes: number[];
@@ -188,8 +215,11 @@ export interface MemoryState {
 }
 
 export interface OrchestratorConfig {
+  workflowMode: WorkflowMode;
   chunkSize: number;
   synthesisChunkCount: number;
+  splitPartCount: number;
+  includeSectionImages: boolean;
   maxConcurrency: number;
   maxRetries: number;
   retryDelay: number;
@@ -209,7 +239,7 @@ export interface LastAIRequestAttempt {
   sentAt: string;
   finishedAt?: string;
   maxOutputTokens?: number;
-  outcome: 'success' | 'error';
+  outcome: 'running' | 'success' | 'error';
   error?: string;
   nextAction?: string;
 }
@@ -241,6 +271,7 @@ export interface TaskState {
   pageAnalyses: PageAnalysis[];
   chunkSyntheses: ChunkSynthesis[];
   globalSynthesis: StorySynthesis;
+  writingPreparation: WritingPreparation;
   novelSections: NovelSection[];
   finalPolish: FinalPolish;
   memory: MemoryState;
@@ -248,12 +279,17 @@ export interface TaskState {
   creativeSettings: CreativeSettings;
   currentChunkIndex: number;
   fullNovel: string;
+  runtimeMs: number;
+  runtimeStartedAt?: string;
   lastAIRequest?: LastAIRequest;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
+  workflowMode: 'split-draft',
   chunkSize: 1,
   synthesisChunkCount: 8,
+  splitPartCount: 4,
+  includeSectionImages: false,
   maxConcurrency: 3,
   maxRetries: 3,
   retryDelay: 2000,
@@ -351,18 +387,25 @@ export function resolveStageAPIConfig(config: APIConfig, stage: RequestStage): A
 }
 
 export function getEnabledRequestStages(
-  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish' | 'workflowMode'>
 ): RequestStage[] {
+  const enabledStages = REQUEST_STAGES.filter((stage) => (
+    !(
+      orchestratorConfig?.workflowMode === 'split-draft'
+      && stage === 'synthesize-chunks'
+    )
+  ));
+
   if (orchestratorConfig?.enableFinalPolish) {
-    return REQUEST_STAGES;
+    return enabledStages;
   }
 
-  return REQUEST_STAGES.filter((stage) => stage !== 'polish-novel');
+  return enabledStages.filter((stage) => stage !== 'polish-novel');
 }
 
 export function canResolveStageAccess(
   config: APIConfig,
-  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish'>
+  orchestratorConfig?: Pick<OrchestratorConfig, 'enableFinalPolish' | 'workflowMode'>
 ): boolean {
   return getEnabledRequestStages(orchestratorConfig).every((stage) => {
     const stageConfig = resolveStageAPIConfig(config, stage);
@@ -384,11 +427,24 @@ export const DEFAULT_STORY_SYNTHESIS: StorySynthesis = {
   sceneOutline: [],
   writingConstraints: [],
   outlineConfirmed: false,
+  runtimeMs: 0,
+  retryCount: 0,
+};
+
+export const DEFAULT_WRITING_PREPARATION: WritingPreparation = {
+  status: 'pending',
+  voiceGuide: '',
+  runtimeMs: 0,
   retryCount: 0,
 };
 
 export const DEFAULT_FINAL_POLISH: FinalPolish = {
   status: 'pending',
+  polishedSectionBodies: [],
+  currentSectionIndex: 0,
+  totalSections: 0,
+  phase: 'idle',
+  runtimeMs: 0,
   retryCount: 0,
 };
 
@@ -405,7 +461,14 @@ export const WRITING_MODE_LABELS: Record<WritingMode, string> = {
   literary: '文学改写',
 };
 
+export const WORKFLOW_MODE_LABELS: Record<WorkflowMode, string> = {
+  'page-analysis': '逐页分析',
+  'split-draft': '直综合写作',
+};
+
 export const DEFAULT_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
+export const GEMINI_ROOT_BASE_URL = 'https://generativelanguage.googleapis.com';
+export const DEFAULT_GEMINI_BASE_URL = `${GEMINI_ROOT_BASE_URL}/v1beta`;
 export const LEGACY_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 export const COMPATIBLE_MODELS: ModelOption[] = [

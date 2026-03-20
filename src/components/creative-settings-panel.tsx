@@ -76,7 +76,7 @@ export function CreativeSettingsPanel({
   };
 
   return (
-    <Card className="relative z-10">
+    <Card className="relative z-10" data-panel="creative-settings-panel">
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-2 text-base">
           <WandSparkles className="h-4 w-4" />
@@ -95,6 +95,7 @@ export function CreativeSettingsPanel({
                 className="h-7 px-2"
                 onClick={handleSavePreset}
                 disabled={disabled}
+                data-action="save-creative-preset"
               >
                 保存为预设
               </Button>
@@ -105,6 +106,7 @@ export function CreativeSettingsPanel({
                 className="h-7 px-2"
                 onClick={handleDeletePreset}
                 disabled={disabled || !canDeletePreset}
+                data-action="delete-creative-preset"
               >
                 删除预设
               </Button>
@@ -187,6 +189,8 @@ export function CreativeSettingsPanel({
               className="h-7 px-2"
               onClick={() => setShowSupplementalPrompt((prev) => !prev)}
               disabled={disabled}
+              data-action="toggle-supplemental-prompt"
+              data-expanded={showSupplementalPrompt ? 'true' : 'false'}
             >
               {showSupplementalPrompt ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showSupplementalPrompt ? '收起' : '展开'}
@@ -217,6 +221,8 @@ export function CreativeSettingsPanel({
               className="h-7 px-2"
               onClick={() => setShowRoleAndStyle((prev) => !prev)}
               disabled={disabled}
+              data-action="toggle-role-and-style"
+              data-expanded={showRoleAndStyle ? 'true' : 'false'}
             >
               {showRoleAndStyle ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showRoleAndStyle ? '收起' : '展开'}
@@ -247,6 +253,8 @@ export function CreativeSettingsPanel({
               className="h-7 px-2"
               onClick={() => setShowSystemPrompt((prev) => !prev)}
               disabled={disabled}
+              data-action="toggle-system-prompt"
+              data-expanded={showSystemPrompt ? 'true' : 'false'}
             >
               {showSystemPrompt ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
               {showSystemPrompt ? '收起' : '展开'}

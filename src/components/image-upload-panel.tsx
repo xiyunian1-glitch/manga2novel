@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ImagePlus, X, GripVertical, Trash2, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ImageItem } from '@/lib/types';
@@ -54,6 +55,7 @@ export function ImageUploadPanel({
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [previewImageId, setPreviewImageId] = useState<string | null>(null);
 
   useEffect(() => {
     const input = folderInputRef.current;
@@ -174,6 +176,7 @@ export function ImageUploadPanel({
     }
   };
   const handleItemDragEnd = () => setDragIndex(null);
+  const previewImage = previewImageId ? images.find((image) => image.id === previewImageId) || null : null;
 
   return (
     <Card>
@@ -183,7 +186,14 @@ export function ImageUploadPanel({
           漫画图片
           <Badge variant="secondary" className="ml-auto">{images.length} 张</Badge>
           {images.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={onClear} disabled={disabled} className="h-7 px-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClear}
+              disabled={disabled}
+              className="h-7 px-2"
+              data-action="clear-images"
+            >
               <Trash2 className="h-3 w-3 mr-1" />
               清空
             </Button>
@@ -219,13 +229,27 @@ export function ImageUploadPanel({
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
-            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={openFilePicker}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={openFilePicker}
+              data-action="upload-images"
+            >
               <ImagePlus className="h-3.5 w-3.5 mr-1" />
               上传图片
             </Button>
-            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
-              void openFolderPicker();
-            }}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => {
+                void openFolderPicker();
+              }}
+              data-action="upload-folder"
+            >
               <FolderOpen className="h-3.5 w-3.5 mr-1" />
               上传文件夹
             </Button>
@@ -238,6 +262,7 @@ export function ImageUploadPanel({
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
             disabled={disabled}
+            data-input="image-upload"
           />
           <input
             ref={folderInputRef}
@@ -246,6 +271,7 @@ export function ImageUploadPanel({
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
             disabled={disabled}
+            data-input="folder-upload"
           />
         </div>
 
@@ -266,11 +292,20 @@ export function ImageUploadPanel({
                   <span className="text-xs text-muted-foreground w-6 text-right shrink-0">
                     {index + 1}
                   </span>
-                  <img
-                    src={img.previewUrl}
-                    alt={`第${index + 1}页`}
-                    className="h-10 w-8 object-cover rounded border shrink-0"
-                  />
+                  <button
+                    type="button"
+                    className="shrink-0 rounded border transition hover:border-primary hover:ring-2 hover:ring-primary/15"
+                    onClick={() => setPreviewImageId(img.id)}
+                    title="点击查看大图"
+                    draggable={false}
+                  >
+                    <img
+                      src={img.previewUrl}
+                      alt={`第${index + 1}页`}
+                      className="h-10 w-8 object-cover rounded"
+                      draggable={false}
+                    />
+                  </button>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs truncate" title={getFilePath(img.file)}>
                       {getFilePath(img.file)}
@@ -314,6 +349,33 @@ export function ImageUploadPanel({
           </div>
         )}
       </CardContent>
+
+      <Dialog open={Boolean(previewImage)} onOpenChange={(open) => !open && setPreviewImageId(null)}>
+        <DialogContent className="w-[min(96vw,72rem)] sm:max-w-5xl">
+          {previewImage ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{getFilePath(previewImage.file)}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="text-xs text-muted-foreground">
+                  原图大小 {formatSize(previewImage.originalSize)}
+                  {previewImage.compressedSize && previewImage.compressedSize !== previewImage.originalSize
+                    ? ` · 处理后 ${formatSize(previewImage.compressedSize)}`
+                    : ''}
+                </div>
+                <div className="overflow-hidden rounded-lg border bg-muted/20">
+                  <img
+                    src={previewImage.previewUrl}
+                    alt={getFilePath(previewImage.file)}
+                    className="max-h-[75vh] w-full object-contain"
+                  />
+                </div>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
