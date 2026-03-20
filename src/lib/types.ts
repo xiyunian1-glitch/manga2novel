@@ -288,7 +288,7 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   workflowMode: 'split-draft',
   chunkSize: 1,
   synthesisChunkCount: 8,
-  splitPartCount: 4,
+  splitPartCount: 8,
   includeSectionImages: false,
   maxConcurrency: 3,
   maxRetries: 3,

@@ -97,7 +97,7 @@ export function OrchestratorConfigPanel({ config, onUpdate, disabled }: Orchestr
                 <div className="space-y-1">
                   <Label className="text-sm">章节默认分段数（直综合写作）</Label>
                   <p className="text-xs text-muted-foreground">
-                    决定整书综合后默认拆成几部分进入章节写作。`0` 表示自动按页数估算，默认值为 `4`。
+                    决定整书综合后默认拆成几部分进入章节写作。`0` 表示自动按页数估算，默认值为 `8`。
                   </p>
                 </div>
                 <div className="w-24">
