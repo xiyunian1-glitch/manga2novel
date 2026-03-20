@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   BookOpenText,
   ChevronDown,
@@ -26,7 +26,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { detectLocalProxyStatus, getLocalProxyStatusLabelRange, type LocalProxyStatus } from '@/lib/api-adapter';
 import { getTroubleshootingAdvice } from '@/lib/error-hints';
 import type { APIConfig, LastAIRequest, OrchestratorConfig, RequestStage } from '@/lib/types';
 import {
@@ -99,8 +98,6 @@ function formatRequestImageSummary(request?: LastAIRequest): string {
 export default function Manga2NovelApp() {
   const [lastRequestOpen, setLastRequestOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [proxyStatus, setProxyStatus] = useState<LocalProxyStatus | null>(null);
-  const [proxyStatusChecking, setProxyStatusChecking] = useState(false);
   const {
     apiConfig,
     apiProfiles,
@@ -145,48 +142,6 @@ export default function Manga2NovelApp() {
     reset,
     exportNovel,
   } = useManga2Novel();
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    const checkProxyStatus = async () => {
-      if (!isCancelled) {
-        setProxyStatusChecking(true);
-      }
-
-      try {
-        const nextStatus = await detectLocalProxyStatus();
-        if (!isCancelled) {
-          setProxyStatus(nextStatus);
-        }
-      } finally {
-        if (!isCancelled) {
-          setProxyStatusChecking(false);
-        }
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void checkProxyStatus();
-      }
-    };
-
-    void checkProxyStatus();
-    const intervalId = window.setInterval(() => {
-      void checkProxyStatus();
-    }, 15000);
-
-    window.addEventListener('focus', checkProxyStatus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', checkProxyStatus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
 
   const isRunning = taskState.status === 'running' || taskState.status === 'preparing';
   const isPaused = taskState.status === 'paused';
@@ -320,22 +275,6 @@ export default function Manga2NovelApp() {
   ]);
   const currentFailureAdvice = useMemo(() => getTroubleshootingAdvice(currentFailure?.error), [currentFailure?.error]);
   const showRecoveryResume = recoveryNotice?.type === 'interrupted-task' && isPaused;
-  const shouldShowProxyStatus = proxyStatus?.isLocalSession;
-  const proxyStatusText = useMemo(() => {
-    if (!proxyStatus?.isLocalSession) {
-      return '';
-    }
-
-    if (proxyStatusChecking && !proxyStatus) {
-      return '代理检测中';
-    }
-
-    if (proxyStatus.available) {
-      return `代理已连接${proxyStatus.port ? `:${proxyStatus.port}` : ''}`;
-    }
-
-    return `代理未连接 (${getLocalProxyStatusLabelRange()})`;
-  }, [proxyStatus, proxyStatusChecking]);
 
   const handleStart = async () => {
     try {
@@ -566,32 +505,6 @@ export default function Manga2NovelApp() {
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5">
-              {shouldShowProxyStatus ? (
-                <div
-                  className={cn(
-                    'inline-flex h-9 items-center gap-2 rounded-lg border px-2.5 text-xs',
-                    proxyStatus?.available
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                      : 'border-amber-200 bg-amber-50 text-amber-700'
-                  )}
-                  title={proxyStatus?.available
-                    ? '本地代理可用，浏览器请求会优先走内置代理。'
-                    : `本地代理暂未连上。请运行本地启动脚本，或检查 ${getLocalProxyStatusLabelRange()} 端口范围是否被占用。`}
-                >
-                  <span
-                    className={cn(
-                      'h-2.5 w-2.5 rounded-full',
-                      proxyStatusChecking
-                        ? 'bg-amber-400 animate-pulse'
-                        : proxyStatus?.available
-                          ? 'bg-emerald-500'
-                          : 'bg-amber-500'
-                    )}
-                  />
-                  <span>{proxyStatusText}</span>
-                </div>
-              ) : null}
-
               <Button
                 type="button"
                 size="sm"
