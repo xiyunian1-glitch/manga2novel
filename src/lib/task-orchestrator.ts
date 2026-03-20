@@ -204,6 +204,10 @@ const SPLIT_DRAFT_CHUNK_MAX_TOKENS = 8192;
 const WRITING_PREPARATION_MAX_TOKENS = 2048;
 const WRITING_MAX_TOKENS = 8192;
 const FINAL_POLISH_VOICE_GUIDE_MAX_TOKENS = 4096;
+const FINAL_POLISH_SECTION_MIN_TOKENS = 6144;
+const FINAL_POLISH_DRAFT_MIN_TOKENS = 6144;
+const FINAL_POLISH_SECTION_TOKEN_MULTIPLIER = 1.8;
+const FINAL_POLISH_DRAFT_TOKEN_MULTIPLIER = 2.2;
 const FINAL_POLISH_INITIAL_MAX_TOKENS = 12288;
 const FINAL_POLISH_RETRY_MAX_TOKENS = 24576;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
@@ -2813,12 +2817,18 @@ export class TaskOrchestrator {
 
   private getFinalPolishSectionMaxTokens(section: NovelSection): number {
     const bodyLength = section.markdownBody?.trim().length || 0;
-    return Math.min(FINAL_POLISH_INITIAL_MAX_TOKENS, Math.max(4096, Math.ceil(bodyLength * 1.4)));
+    return Math.min(
+      FINAL_POLISH_INITIAL_MAX_TOKENS,
+      Math.max(FINAL_POLISH_SECTION_MIN_TOKENS, Math.ceil(bodyLength * FINAL_POLISH_SECTION_TOKEN_MULTIPLIER))
+    );
   }
 
   private getFinalPolishDraftMaxTokens(draftText: string): number {
     const bodyLength = draftText.trim().length;
-    return Math.min(FINAL_POLISH_INITIAL_MAX_TOKENS, Math.max(2048, Math.ceil(bodyLength * 1.5)));
+    return Math.min(
+      FINAL_POLISH_INITIAL_MAX_TOKENS,
+      Math.max(FINAL_POLISH_DRAFT_MIN_TOKENS, Math.ceil(bodyLength * FINAL_POLISH_DRAFT_TOKEN_MULTIPLIER))
+    );
   }
 
   private getAdaptiveTimeoutMs(textLength: number, baseMs: number, maxMs: number): number {
