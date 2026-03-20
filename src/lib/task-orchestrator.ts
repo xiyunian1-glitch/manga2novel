@@ -4605,9 +4605,8 @@ export class TaskOrchestrator {
       this.initializeSectionsFromGlobalSynthesis();
     }
 
-    let writingPreparationGenerated = false;
     try {
-      writingPreparationGenerated = await this.ensureWritingPreparation();
+      await this.ensureWritingPreparation();
     } catch (error) {
       if (isAbortError(error)) {
         this.stopRuntimeTracking();
@@ -4622,14 +4621,6 @@ export class TaskOrchestrator {
       this.state.status = 'paused';
       this.state.currentChunkIndex = 0;
       this.emit('chunk-error', 0, errorMessage);
-      this.emit('paused');
-      return false;
-    }
-
-    if (writingPreparationGenerated) {
-      this.stopRuntimeTracking();
-      this.state.status = 'paused';
-      this.state.currentChunkIndex = this.getResumeSectionIndex(0);
       this.emit('paused');
       return false;
     }
