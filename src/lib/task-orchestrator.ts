@@ -203,6 +203,8 @@ const SYNTHESIS_MAX_TOKENS = 6144;
 const SPLIT_DRAFT_CHUNK_MAX_TOKENS = 8192;
 const WRITING_PREPARATION_MAX_TOKENS = 2048;
 const WRITING_MAX_TOKENS = 8192;
+const FINAL_POLISH_INITIAL_MAX_TOKENS = 12288;
+const FINAL_POLISH_RETRY_MAX_TOKENS = 24576;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MAX_MS = 300_000;
 const CHUNK_SYNTHESIS_TIMEOUT_MS = 180_000;
@@ -1610,8 +1612,9 @@ function getTruncationRetryTokenCap(stage: RequestStage, provider?: APIProvider,
     case 'analyze-pages':
       return isGeminiFamilyModel(provider || 'compatible', model) ? 16384 : 12288;
     case 'write-sections':
-    case 'polish-novel':
       return 16384;
+    case 'polish-novel':
+      return FINAL_POLISH_RETRY_MAX_TOKENS;
     case 'synthesize-chunks':
     case 'synthesize-story':
     default:
@@ -2809,12 +2812,12 @@ export class TaskOrchestrator {
 
   private getFinalPolishSectionMaxTokens(section: NovelSection): number {
     const bodyLength = section.markdownBody?.trim().length || 0;
-    return Math.min(8192, Math.max(4096, Math.ceil(bodyLength * 1.4)));
+    return Math.min(FINAL_POLISH_INITIAL_MAX_TOKENS, Math.max(4096, Math.ceil(bodyLength * 1.4)));
   }
 
   private getFinalPolishDraftMaxTokens(draftText: string): number {
     const bodyLength = draftText.trim().length;
-    return Math.min(8192, Math.max(2048, Math.ceil(bodyLength * 1.5)));
+    return Math.min(FINAL_POLISH_INITIAL_MAX_TOKENS, Math.max(2048, Math.ceil(bodyLength * 1.5)));
   }
 
   private getAdaptiveTimeoutMs(textLength: number, baseMs: number, maxMs: number): number {

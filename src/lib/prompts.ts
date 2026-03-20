@@ -73,6 +73,16 @@ export const USER_PROMPT_TEMPLATE = `{{chunkHeader}}
 
 {{outputInstruction}}`;
 
+const NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_ZH = `1. novelText 必须写成有呼吸感的小说自然段，可使用 \\n\\n 表示段落空行，不要整屏只有一个超长段落。
+2. 对白轮次变化、动作重点切换、情绪落点变化、时间或场景转场时，应及时换段。
+3. 多数段落控制在 1-4 句，只有在连续铺陈确有必要时才写更长段落。
+4. 句长要有变化，紧张、停顿或强调的瞬间可以用更短句或单独成段来落点。`;
+
+const NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_EN = `1. Write novelText in readable novel paragraphs and use \\n\\n between paragraphs when needed instead of one screen-filling block of text.
+2. Start a new paragraph when dialogue turns change, action focus shifts, emotional beats land, or time/scene transitions occur.
+3. Keep most paragraphs to about 1-4 sentences unless a longer buildup is clearly necessary.
+4. Vary sentence length so the prose can breathe; let short beats land on their own when tension spikes or emphasis is needed.`;
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -416,6 +426,9 @@ const SECTION_SYSTEM_PROMPT_BODY = `## 你的任务
 7. 不要输出 [1]、[2]、[^1] 这类引用标记、脚注、来源编号或检索注释。
 8. 所有中文输出必须统一使用简体中文，不要输出繁体中文。
 9. 只返回 JSON，不要附加 Markdown 代码块或额外说明。
+
+## 段落节奏
+${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_ZH}
 ${SECTION_OUTPUT_SCHEMA}`;
 
 const FINAL_POLISH_SYSTEM_PROMPT_BODY = `## 你的任务
@@ -428,6 +441,9 @@ const FINAL_POLISH_SYSTEM_PROMPT_BODY = `## 你的任务
 4. 如果原稿已经稳定，优先轻修，不要为了“更文学”而过度改写。
 5. 所有中文输出必须统一使用简体中文，不要输出繁体中文。
 6. 只返回 JSON，不要附加 Markdown 代码块或额外说明。
+
+## 段落节奏
+${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_ZH}
 ${FINAL_POLISH_OUTPUT_SCHEMA}`;
 
 const FINAL_POLISH_VOICE_GUIDE_OUTPUT_SCHEMA = `{
@@ -448,6 +464,9 @@ Create a compact editing guide that can be reused to polish sections one by one 
 4. The voiceGuide field must be a plain string, not an object or array.
 5. If you output Chinese, use Simplified Chinese only. Never output Traditional Chinese.
 6. Return JSON only, without Markdown code fences or extra explanation.
+
+## Paragraph rhythm
+${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_EN}
 ${FINAL_POLISH_VOICE_GUIDE_OUTPUT_SCHEMA}`;
 
 const WRITING_PREPARATION_SYSTEM_PROMPT_BODY = `## Your task
@@ -461,6 +480,9 @@ Create a compact whole-book unification guide that can be reused across every se
 5. The voiceGuide field must be a plain string, not an object or array.
 6. If you output Chinese, use Simplified Chinese only. Never output Traditional Chinese.
 7. Return JSON only, without Markdown code fences or extra explanation.
+
+## Paragraph rhythm
+${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_EN}
 ${WRITING_PREPARATION_OUTPUT_SCHEMA}`;
 
 const FINAL_POLISH_SECTION_SYSTEM_PROMPT_BODY = `## Your task
@@ -473,6 +495,9 @@ Lightly polish only the current section so that its tone, naming, rhythm, and co
 4. Maintain smooth transitions with nearby sections, but do not pull in events that belong to adjacent sections.
 5. If you output Chinese, use Simplified Chinese only. Never output Traditional Chinese.
 6. Return JSON only, without Markdown code fences or extra explanation.
+
+## Paragraph rhythm
+${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_EN}
 ${FINAL_POLISH_OUTPUT_SCHEMA}`;
 
 function stringifyPromptData(data: unknown): string {
@@ -506,14 +531,14 @@ function dedupeStrings(values: Array<string | undefined>, limit = 6): string[] {
 
 function buildSectionLengthGuidance(pageCount: number, chunkCount: number): string {
   if (pageCount <= 1) {
-    return '这是一个较短场景。请至少写成 2-3 个自然段，尽量达到约 220-350 字，让开场、动作/对话、情绪落点完整成形，而不是只写一句摘要。';
+    return '这是一个较短场景。请至少写成 2-3 个自然段，尽量达到约 220-350 字；段落之间保留空行，让开场、动作/对话、情绪落点完整成形，而不是只写一句摘要。';
   }
 
   if (pageCount <= 3 || chunkCount <= 2) {
-    return '这是一个中短场景。请尽量写成 3-5 个自然段，约 380-700 字，把动作、对话、情绪变化和承接信息展开成完整小说场景。';
+    return '这是一个中短场景。请尽量写成 3-5 个自然段，约 380-700 字；段落之间保留空行，把动作、对话、情绪变化和承接信息展开成完整小说场景。';
   }
 
-  return '这是一个信息量较高的场景。请尽量写成 5-8 个自然段，约 650-1200 字，充分展开场景推进、人物反应和氛围变化。';
+  return '这是一个信息量较高的场景。请尽量写成 5-8 个自然段，约 650-1200 字；段落之间保留空行，充分展开场景推进、人物反应和氛围变化。';
 }
 
 function buildWritingModeInstruction(writingMode: WritingMode, stage: 'section' | 'polish'): string {
@@ -982,7 +1007,8 @@ export function buildSplitDraftChunkPrompt(
     '7. continuitySummary should state what the next part must inherit: situation, relationship changes, unresolved tension, location/time cues, and emotional state.',
     '8. If something is ambiguous, stay conservative and avoid inventing key plot facts, inner thoughts, or backstory.',
     '9. In faithful mode, prefer preserving content density and scene sequence over literary compression.',
-    '10. Return JSON only.',
+    '10. draftText must read like a published novel scene with clear paragraph rhythm. Use \\n\\n between paragraphs, break on dialogue/action/emotional turns, and avoid one uninterrupted wall of text.',
+    '11. Return JSON only.',
     '',
     '[Part context]',
     stringifyPromptData(promptContext),
@@ -1350,6 +1376,8 @@ export function buildSectionUserPrompt(
     '',
     `【章节展开要求】\n${sectionLengthGuidance}`,
     '',
+    `【段落节奏】\n${NOVEL_PARAGRAPH_RHYTHM_GUIDANCE_ZH}`,
+    '',
     mandatoryDialogueCarryList.length > 0
       ? `\n[Mandatory dialogue lines]\nThis block has higher priority than scene expansion or literary polishing. Every line below must appear in novelText as direct speech or as a clearly recognizable minimally edited quote. Do not silently drop any line unless two adjacent entries are obviously one split utterance that should be merged.\n${stringifyPromptData(mandatoryDialogueCarryList)}`
       : '',
@@ -1458,8 +1486,9 @@ export function buildSplitDraftFinalSectionPrompt(
     '5. In faithful mode, do not significantly shorten the combined part drafts unless you are removing obvious repetition. Preserve content density and important scene beats.',
     '6. If a part draft already contains explicit dialogue, preserve it as direct speech by default. You may make only small wording edits for smoother scene flow, but do not turn most of it into paraphrased narration.',
     '7. You may smooth repetitions and transitions, but do not invent major plot points, extra motivations, or missing scenes that are not supported by the drafts.',
-    '8. continuitySummary should briefly describe the final overall ending state of the completed novel body.',
-    '9. Return JSON only.',
+    '8. Keep or improve the existing paragraph rhythm. Use \\n\\n between paragraphs, break on dialogue/action/emotional turns, and do not merge the whole chapter into a wall of text.',
+    '9. continuitySummary should briefly describe the final overall ending state of the completed novel body.',
+    '10. Return JSON only.',
     '',
     '[Story synthesis]',
     stringifyPromptData(storyContext),
@@ -1506,10 +1535,11 @@ export function buildWritingPreparationUserPrompt(
     '2. Focus on tone, diction, naming consistency, dialogue carry-forward, dialogue handling, paragraph rhythm, perspective consistency, and continuity priorities.',
     '3. The guide should explicitly reinforce this dialogue policy: when the source contains clear original dialogue, drafting should quote it directly by default and allow only small wording edits for scene fit.',
     '4. The guide should also state that preserving explicit source dialogue has higher priority than adding extra atmosphere, exposition, or inner monologue.',
-    '5. Keep it compact, concrete, and actionable for section drafting.',
-    '6. Do not invent new plot facts, characters, settings, or endings.',
-    '7. The voiceGuide field must be a plain string, not an object or array.',
-    '8. Output JSON only.',
+    '5. The guide should explicitly require readable paragraph rhythm: use \\n\\n between paragraphs, break on dialogue/action/emotional turns, and avoid screen-filling paragraphs.',
+    '6. Keep it compact, concrete, and actionable for section drafting.',
+    '7. Do not invent new plot facts, characters, settings, or endings.',
+    '8. The voiceGuide field must be a plain string, not an object or array.',
+    '9. Output JSON only.',
     '',
     '[Story synthesis]',
     stringifyPromptData(storyContext),
@@ -1612,9 +1642,10 @@ export function buildFinalPolishVoiceGuideUserPrompt(
     '1. The guide must be reusable for polishing sections one by one.',
     '2. Focus on tone, diction, naming consistency, dialogue style, paragraph rhythm, and continuity priorities.',
     '3. Preserve the story facts from the synthesis and the written sections. Do not invent new events.',
-    '4. Keep the guide compact, concrete, and actionable.',
-    '5. The voiceGuide field must be a plain string, not an object or array.',
-    '6. Output JSON only.',
+    '4. The guide should explicitly require readable paragraph rhythm: use \\n\\n between paragraphs, break on dialogue/action/emotional turns, and avoid wall-of-text paragraphs.',
+    '5. Keep the guide compact, concrete, and actionable.',
+    '6. The voiceGuide field must be a plain string, not an object or array.',
+    '7. Output JSON only.',
     '',
     '[Story synthesis]',
     stringifyPromptData(storyContext),
@@ -1678,8 +1709,9 @@ export function buildFinalPolishSectionUserPrompt(
     '2. Preserve plot facts, character relationships, and event order.',
     '3. Keep length roughly similar; do not aggressively expand or compress the section.',
     '4. Follow the voice guide so the book reads consistently from section to section.',
-    '5. Use nearby section context only for continuity, not for importing adjacent-section events.',
-    '6. Output JSON only.',
+    '5. Improve paragraph rhythm without changing the story: use \\n\\n between paragraphs, break on dialogue/action/emotional turns, and avoid leaving the section as one long block.',
+    '6. Use nearby section context only for continuity, not for importing adjacent-section events.',
+    '7. Output JSON only.',
     '',
     '[Voice guide]',
     voiceGuide,
