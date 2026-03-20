@@ -3335,6 +3335,11 @@ export class TaskOrchestrator {
     return this.state.pageAnalyses.filter((page) => page.analysisBatchIndex === batchIndex);
   }
 
+  private getRetryablePageAnalysesForAnalysisBatch(batchIndex: number): PageAnalysis[] {
+    return this.getPageAnalysesForAnalysisBatch(batchIndex)
+      .filter((page) => !isTerminalChunkStatus(page.status, page.error));
+  }
+
   private getAnalysisBatchCount(): number {
     const lastBatchIndex = this.state.pageAnalyses.reduce((maxBatchIndex, page) => (
       Math.max(maxBatchIndex, page.analysisBatchIndex)
@@ -3738,7 +3743,7 @@ export class TaskOrchestrator {
   }
 
   private applySkippedPageAnalysisChunk(batchIndex: number, errorMessage: string) {
-    const pageAnalyses = this.getPageAnalysesForAnalysisBatch(batchIndex);
+    const pageAnalyses = this.getRetryablePageAnalysesForAnalysisBatch(batchIndex);
     if (pageAnalyses.length === 0) {
       return;
     }
@@ -4341,12 +4346,13 @@ export class TaskOrchestrator {
 
         const batchIndex = pendingBatchIndexes[queueIndex];
         const batchPages = this.getPageAnalysesForAnalysisBatch(batchIndex);
-        if (batchPages.length === 0 || batchPages.every((page) => isTerminalChunkStatus(page.status, page.error))) {
+        const retryableBatchPages = batchPages.filter((page) => !isTerminalChunkStatus(page.status, page.error));
+        if (retryableBatchPages.length === 0) {
           continue;
         }
 
         this.state.currentChunkIndex = batchIndex;
-        batchPages.forEach((pageAnalysis) => {
+        retryableBatchPages.forEach((pageAnalysis) => {
           pageAnalysis.status = 'processing';
           pageAnalysis.error = undefined;
           startTrackedRuntime(pageAnalysis);
@@ -4354,8 +4360,8 @@ export class TaskOrchestrator {
         this.emit('chunk-start', batchIndex);
 
         try {
-          await this.analyzePageBatch(batchIndex, batchPages, readyImages);
-          batchPages.forEach((pageAnalysis) => stopTrackedRuntime(pageAnalysis));
+          await this.analyzePageBatch(batchIndex, retryableBatchPages, readyImages);
+          retryableBatchPages.forEach((pageAnalysis) => stopTrackedRuntime(pageAnalysis));
           this.emit('chunk-success', batchIndex);
         } catch (error) {
           if (isAbortError(error)) {
@@ -4363,12 +4369,12 @@ export class TaskOrchestrator {
           }
 
           const errorMessage = error instanceof Error ? error.message : String(error);
-          batchPages.forEach((pageAnalysis) => {
+          retryableBatchPages.forEach((pageAnalysis) => {
             if (pageAnalysis.runtimeStartedAt) {
               stopTrackedRuntime(pageAnalysis);
             }
           });
-          batchPages.forEach((pageAnalysis) => {
+          retryableBatchPages.forEach((pageAnalysis) => {
             if (pageAnalysis.status === 'processing' || pageAnalysis.status === 'pending') {
               pageAnalysis.status = 'error';
               pageAnalysis.error = errorMessage;
@@ -5161,7 +5167,7 @@ export class TaskOrchestrator {
   async skipAndContinue(): Promise<void> {
     switch (this.state.currentStage) {
       case 'analyze-pages': {
-        const pageAnalyses = this.getPageAnalysesForAnalysisBatch(this.state.currentChunkIndex);
+        const pageAnalyses = this.getRetryablePageAnalysesForAnalysisBatch(this.state.currentChunkIndex);
         pageAnalyses.forEach((pageAnalysis) => {
           pageAnalysis.status = 'skipped';
           pageAnalysis.error = undefined;
@@ -5258,7 +5264,7 @@ export class TaskOrchestrator {
   async retryCurrentAndContinue(): Promise<void> {
     switch (this.state.currentStage) {
       case 'analyze-pages': {
-        const pageAnalyses = this.getPageAnalysesForAnalysisBatch(this.state.currentChunkIndex);
+        const pageAnalyses = this.getRetryablePageAnalysesForAnalysisBatch(this.state.currentChunkIndex);
         pageAnalyses.forEach((pageAnalysis) => {
           this.clearPageAnalysis(pageAnalysis);
         });
