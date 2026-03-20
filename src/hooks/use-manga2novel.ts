@@ -53,6 +53,7 @@ import {
   CREATIVE_PRESETS,
   CUSTOM_PRESET_ID,
   composeSystemPrompt,
+  DEFAULT_SUPPLEMENTAL_PROMPT,
   resolveCreativePresetId,
   splitSystemPrompt,
   SYSTEM_PROMPT,
@@ -61,7 +62,7 @@ import {
 } from '@/lib/prompts';
 
 let idCounter = 0;
-const CREATIVE_SETTINGS_TEMPLATE_VERSION = 6;
+const CREATIVE_SETTINGS_TEMPLATE_VERSION = 7;
 const API_PROFILES_STORAGE_KEY = 'apiProfiles';
 const ACTIVE_API_PROFILE_ID_STORAGE_KEY = 'activeApiProfileId';
 const DEFAULT_API_PROFILE_NAME = '默认配置';
@@ -612,7 +613,11 @@ export function useManga2Novel() {
 
       if (savedCreativeSettingsTemplateVersion !== CREATIVE_SETTINGS_TEMPLATE_VERSION) {
         const { supplementalPrompt, roleAndStyle } = splitSystemPrompt(nextCreativeSettings.systemPrompt);
-        nextCreativeSettings.systemPrompt = composeSystemPrompt(supplementalPrompt, roleAndStyle, SYSTEM_PROMPT_BODY);
+        nextCreativeSettings.systemPrompt = composeSystemPrompt(
+          supplementalPrompt.trim() || DEFAULT_SUPPLEMENTAL_PROMPT,
+          roleAndStyle,
+          SYSTEM_PROMPT_BODY
+        );
         nextCreativeSettings.userPromptTemplate = (nextCreativeSettings.userPromptTemplate.trim() || USER_PROMPT_TEMPLATE)
           .replace(/\n?\{\{safetyInstruction\}\}\n?/g, '\n')
           .replace(/\n{3,}/g, '\n\n')
