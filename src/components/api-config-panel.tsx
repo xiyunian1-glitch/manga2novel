@@ -810,7 +810,7 @@ export function APIConfigPanel({
 
       <CardContent className="space-y-4">
         <div className="rounded-xl border bg-muted/10 p-3.5">
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)_auto] xl:items-start">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:items-start">
             <div className="space-y-2">
               <Label>命名配置档</Label>
               <Select value={activeProfileId || activeProfile?.id || ''} onValueChange={handleSwitchProfile} disabled={disabled || profileBusy}>
@@ -847,18 +847,6 @@ export function APIConfigPanel({
                   </span>
                 </div>
               ))}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => handleEditorOpenChange(true)}
-                disabled={disabled}
-                data-action="open-api-config-editor"
-              >
-                配置 API
-              </Button>
             </div>
           </div>
 
