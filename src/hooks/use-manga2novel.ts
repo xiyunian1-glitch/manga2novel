@@ -63,6 +63,7 @@ import {
 
 let idCounter = 0;
 const CREATIVE_SETTINGS_TEMPLATE_VERSION = 7;
+const ORCHESTRATOR_CONFIG_TEMPLATE_VERSION = 2;
 const API_PROFILES_STORAGE_KEY = 'apiProfiles';
 const ACTIVE_API_PROFILE_ID_STORAGE_KEY = 'activeApiProfileId';
 const DEFAULT_API_PROFILE_NAME = '默认配置';
@@ -88,6 +89,40 @@ function resolvePresetIdFromPresets(systemPrompt: string, presets: CreativePrese
   );
 
   return matchedPreset?.id || CUSTOM_PRESET_ID;
+}
+
+function migrateOrchestratorConfig(
+  config: OrchestratorConfig | null | undefined,
+  savedVersion: number | null | undefined
+): OrchestratorConfig | null {
+  if (!config) {
+    return null;
+  }
+
+  const mergedConfig: OrchestratorConfig = {
+    ...DEFAULT_ORCHESTRATOR_CONFIG,
+    ...config,
+  };
+
+  if (savedVersion === ORCHESTRATOR_CONFIG_TEMPLATE_VERSION) {
+    return mergedConfig;
+  }
+
+  const nextConfig: OrchestratorConfig = { ...mergedConfig };
+
+  if (config.chunkSize === 1) {
+    nextConfig.chunkSize = DEFAULT_ORCHESTRATOR_CONFIG.chunkSize;
+  }
+
+  if (config.includeSectionImages === false) {
+    nextConfig.includeSectionImages = DEFAULT_ORCHESTRATOR_CONFIG.includeSectionImages;
+  }
+
+  if (config.enableFinalPolish === false) {
+    nextConfig.enableFinalPolish = DEFAULT_ORCHESTRATOR_CONFIG.enableFinalPolish;
+  }
+
+  return nextConfig;
 }
 
 function canResolveModels(
@@ -533,9 +568,11 @@ export function useManga2Novel() {
   useEffect(() => {
     (async () => {
       const savedOrcConfig = getJSON<OrchestratorConfig>('orchestratorConfig');
+      const savedOrchestratorConfigTemplateVersion = getJSON<number>('orchestratorConfigTemplateVersion');
       const savedCreativeSettings = getJSON<CreativeSettings>('creativeSettings');
       const savedCreativeSettingsTemplateVersion = getJSON<number>('creativeSettingsTemplateVersion');
       const savedCreativePresets = getJSON<CreativePreset[]>('creativePresets');
+      const nextOrchestratorConfig = migrateOrchestratorConfig(savedOrcConfig, savedOrchestratorConfigTemplateVersion);
 
       const nextPresets = [
         ...CREATIVE_PRESETS,
@@ -600,8 +637,12 @@ export function useManga2Novel() {
       setApiProfiles(nextProfiles);
       setActiveApiProfileIdState(nextActiveProfileId);
       setCreativePresets(nextPresets);
-      if (savedOrcConfig) {
-        orchestrator.updateConfig(savedOrcConfig);
+      if (nextOrchestratorConfig) {
+        orchestrator.updateConfig(nextOrchestratorConfig);
+        if (savedOrchestratorConfigTemplateVersion !== ORCHESTRATOR_CONFIG_TEMPLATE_VERSION) {
+          setJSON('orchestratorConfigTemplateVersion', ORCHESTRATOR_CONFIG_TEMPLATE_VERSION);
+          setJSON('orchestratorConfig', nextOrchestratorConfig);
+        }
       }
 
       const nextCreativeSettings: CreativeSettings = {
@@ -633,7 +674,7 @@ export function useManga2Novel() {
 
       setTaskState((prev) => ({
         ...prev,
-        config: savedOrcConfig ? { ...DEFAULT_ORCHESTRATOR_CONFIG, ...savedOrcConfig } : prev.config,
+        config: nextOrchestratorConfig || prev.config,
         creativeSettings: nextCreativeSettings,
       }));
       setConfigLoaded(true);
@@ -872,6 +913,7 @@ export function useManga2Novel() {
     orchestrator.updateConfig(config);
     const current = orchestrator.getState().config;
     setJSON('orchestratorConfig', current);
+    setJSON('orchestratorConfigTemplateVersion', ORCHESTRATOR_CONFIG_TEMPLATE_VERSION);
     setTaskState(orchestrator.getState());
   }, [orchestrator]);
 

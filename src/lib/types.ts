@@ -286,15 +286,15 @@ export interface TaskState {
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   workflowMode: 'split-draft',
-  chunkSize: 1,
+  chunkSize: 8,
   synthesisChunkCount: 8,
   splitPartCount: 8,
-  includeSectionImages: false,
+  includeSectionImages: true,
   maxConcurrency: 3,
   maxRetries: 3,
   retryDelay: 2000,
   autoSkipOnError: false,
-  enableFinalPolish: false,
+  enableFinalPolish: true,
 };
 
 export const DEFAULT_STAGE_MODELS: StageModelConfig = {
