@@ -424,7 +424,7 @@ export default function Manga2NovelApp() {
         <ScrollArea className="h-[420px] rounded-lg border border-border bg-muted/20 p-3">
           <div className="space-y-4 pr-4">
             <div className="space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">首轮失败原因</div>
+              <div className="text-xs font-medium text-muted-foreground">首轮失败原因（仅第 1 次尝试）</div>
               <div className="rounded-lg border bg-background/80 px-3 py-2 text-xs leading-6 whitespace-pre-wrap [overflow-wrap:anywhere]">
                 {lastAIRequest?.firstFailureReason || '本次请求首轮没有失败，或还没记录到失败。'}
               </div>

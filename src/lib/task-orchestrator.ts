@@ -203,6 +203,7 @@ const SYNTHESIS_MAX_TOKENS = 6144;
 const SPLIT_DRAFT_CHUNK_MAX_TOKENS = 8192;
 const WRITING_PREPARATION_MAX_TOKENS = 2048;
 const WRITING_MAX_TOKENS = 8192;
+const FINAL_POLISH_VOICE_GUIDE_MAX_TOKENS = 4096;
 const FINAL_POLISH_INITIAL_MAX_TOKENS = 12288;
 const FINAL_POLISH_RETRY_MAX_TOKENS = 24576;
 const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
@@ -3035,7 +3036,7 @@ export class TaskOrchestrator {
             compactMode
           ),
           temperature: Math.min(this.state.creativeSettings.temperature, 0.7),
-          maxOutputTokens: 2048,
+          maxOutputTokens: FINAL_POLISH_VOICE_GUIDE_MAX_TOKENS,
           timeoutMs: FINAL_POLISH_VOICE_GUIDE_TIMEOUT_MS,
         },
         parseFinalPolishVoiceGuideResult
