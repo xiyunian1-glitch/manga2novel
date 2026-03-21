@@ -19,7 +19,7 @@ interface OrchestratorConfigPanelProps {
 export function OrchestratorConfigPanel({ config, onUpdate, disabled }: OrchestratorConfigPanelProps) {
   const isSplitDraftMode = config.workflowMode === 'split-draft';
   const handleSplitPartCountChange = (value: number) => {
-    const nextValue = Math.max(0, Math.min(20, Math.trunc(value) || 0));
+    const nextValue = Math.max(0, Math.min(500, Math.trunc(value) || 0));
     onUpdate({ splitPartCount: nextValue });
   };
 
@@ -97,7 +97,7 @@ export function OrchestratorConfigPanel({ config, onUpdate, disabled }: Orchestr
                 <div className="space-y-1">
                   <Label className="text-sm">章节默认分段数（直综合写作）</Label>
                   <p className="text-xs text-muted-foreground">
-                    决定整书综合后默认拆成几部分进入章节写作。`0` 表示自动按页数估算，默认值为 `8`。
+                    决定整书综合后默认拆成几部分进入章节写作。`0` 表示自动按每 10 页一章估算，默认值为 `8`。
                   </p>
                 </div>
                 <div className="w-24">
@@ -105,7 +105,7 @@ export function OrchestratorConfigPanel({ config, onUpdate, disabled }: Orchestr
                     type="number"
                     inputMode="numeric"
                     min={0}
-                    max={20}
+                    max={500}
                     step={1}
                     value={config.splitPartCount}
                     onChange={(event) => handleSplitPartCountChange(Number(event.target.value))}
@@ -114,16 +114,16 @@ export function OrchestratorConfigPanel({ config, onUpdate, disabled }: Orchestr
                 </div>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">0 = 自动</span>
+                <span className="text-xs text-muted-foreground">0 = 自动（每 10 页一章）</span>
                 <span className="rounded bg-muted px-2 py-0.5 font-mono text-sm">
-                  {config.splitPartCount === 0 ? '自动' : `${config.splitPartCount} 段`}
+                  {config.splitPartCount === 0 ? '自动（每 10 页一章）' : `${config.splitPartCount} 段`}
                 </span>
               </div>
               <Slider
                 value={[config.splitPartCount]}
                 onValueChange={(value) => handleSplitPartCountChange(Array.isArray(value) ? value[0] : value)}
                 min={0}
-                max={20}
+                max={500}
                 step={1}
                 disabled={disabled}
               />

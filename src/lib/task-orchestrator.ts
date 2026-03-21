@@ -1815,7 +1815,7 @@ function getAutoSplitDraftPartCount(imageCount: number): number {
     return 1;
   }
 
-  return Math.min(20, Math.max(1, Math.ceil(imageCount / 32)));
+  return Math.min(500, Math.max(1, Math.ceil(imageCount / 10)));
 }
 
 function getAutoSectionWritingImageLimit(
@@ -3304,7 +3304,7 @@ export class TaskOrchestrator {
 
     const configured = Math.trunc(this.state.config.splitPartCount);
     if (Number.isFinite(configured) && configured > 0) {
-      return Math.max(1, Math.min(imageCount, Math.min(20, configured)));
+      return Math.max(1, Math.min(imageCount, Math.min(500, configured)));
     }
 
     return Math.min(imageCount, getAutoSplitDraftPartCount(imageCount));
@@ -4214,13 +4214,16 @@ export class TaskOrchestrator {
       runtimeMs: 0,
       retryCount: 0,
     }));
+    const initialNovelSections = this.isSplitDraftMode()
+      ? createSectionsFromSceneOutline([], chunkSyntheses)
+      : [];
 
     this.state.chunks = chunks;
     this.state.pageAnalyses = pageAnalyses;
     this.state.chunkSyntheses = chunkSyntheses;
     this.state.globalSynthesis = cloneGlobalSynthesis(DEFAULT_STORY_SYNTHESIS);
     this.state.writingPreparation = cloneWritingPreparation(DEFAULT_WRITING_PREPARATION);
-    this.state.novelSections = [];
+    this.state.novelSections = initialNovelSections;
     this.state.finalPolish = cloneFinalPolish(DEFAULT_FINAL_POLISH);
     this.state.memory = { ...DEFAULT_MEMORY_STATE };
     this.state.currentStage = chunks.length > 0 ? this.getInitialStageForCurrentMode() : 'idle';

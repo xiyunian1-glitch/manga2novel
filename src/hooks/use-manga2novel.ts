@@ -460,11 +460,42 @@ function restoreImagesFromSnapshot(images: RestorableImageItem[]): ImageItem[] {
   }));
 }
 
+function restoreNovelSectionsFromSnapshot(snapshot: PersistedTaskState): TaskState['novelSections'] {
+  if (snapshot.novelSections.length > 0 || snapshot.config.workflowMode !== 'split-draft') {
+    return snapshot.novelSections;
+  }
+
+  const fallbackSections = snapshot.chunkSyntheses.map((chunk) => ({
+    index: chunk.index,
+    title: chunk.title || `第 ${chunk.index + 1} 节`,
+    chunkIndexes: [chunk.index],
+    status: 'pending' as const,
+    runtimeMs: 0,
+    retryCount: 0,
+  }));
+
+  if (snapshot.globalSynthesis.sceneOutline.length === 0) {
+    return fallbackSections;
+  }
+
+  return snapshot.globalSynthesis.sceneOutline.map((scene, index) => ({
+    index,
+    title: scene.title || `第 ${index + 1} 节`,
+    chunkIndexes: scene.chunkIndexes.length > 0
+      ? [...scene.chunkIndexes]
+      : fallbackSections[index]?.chunkIndexes || [index],
+    status: 'pending' as const,
+    runtimeMs: 0,
+    retryCount: 0,
+  }));
+}
+
 function restoreTaskStateFromSnapshot(snapshot: PersistedTaskState, images: ImageItem[]): TaskState {
   const imageById = new Map(images.map((image) => [image.id, image]));
 
   return {
     ...snapshot,
+    novelSections: restoreNovelSectionsFromSnapshot(snapshot),
     chunks: snapshot.chunks.map((chunk) => ({
       ...chunk,
       images: chunk.imageIds

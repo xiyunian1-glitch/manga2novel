@@ -566,6 +566,9 @@ function getEditDescription(item: ProgressItem): string {
 
 function buildStageCards(taskState: TaskState): StageCard[] {
   const splitDraftMode = isSplitDraftMode(taskState);
+  const expectedSectionCount = taskState.novelSections.length > 0
+    ? taskState.novelSections.length
+    : (splitDraftMode ? taskState.chunkSyntheses.length : 0);
   const cards: StageCard[] = [];
 
   cards.push({
@@ -597,7 +600,7 @@ function buildStageCards(taskState: TaskState): StageCard[] {
   cards.push({
     stage: 'write-sections',
     title: '章节写作',
-    value: `${countCompleted(taskState.novelSections)} / ${taskState.novelSections.length}`,
+    value: `${countCompleted(taskState.novelSections)} / ${expectedSectionCount}`,
     secondary: taskState.writingPreparation.voiceGuide?.trim() ? '写作前全书统稿已完成' : undefined,
     hint: '查看各章节正文',
   });

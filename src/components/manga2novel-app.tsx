@@ -184,7 +184,7 @@ export default function Manga2NovelApp() {
       ? `逐页分组：${taskState.config.chunkSize === 0 ? '自动（自适应）' : `每组 ${taskState.config.chunkSize} 张`}`
       : `逐页分组：${taskState.config.chunkSize === 0 ? '自动（自适应）' : `每组 ${taskState.config.chunkSize} 张`}`;
     const synthesisSummary = taskState.config.workflowMode === 'split-draft'
-      ? `章节分段：${taskState.config.splitPartCount === 0 ? '自动' : `${taskState.config.splitPartCount} 段`}`
+      ? `章节分段：${taskState.config.splitPartCount === 0 ? '自动（每 10 页一章）' : `${taskState.config.splitPartCount} 段`}`
       : `分块综合：${taskState.config.synthesisChunkCount} 段`;
 
     return [
