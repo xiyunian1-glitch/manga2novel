@@ -234,8 +234,7 @@ const FINAL_POLISH_SECTION_TOKEN_MULTIPLIER = 1.8;
 const FINAL_POLISH_DRAFT_TOKEN_MULTIPLIER = 2.2;
 const FINAL_POLISH_INITIAL_MAX_TOKENS = 12288;
 const FINAL_POLISH_RETRY_MAX_TOKENS = 24576;
-const PAGE_ANALYSIS_BATCH_TIMEOUT_MS = 90_000;
-const PAGE_ANALYSIS_BATCH_TIMEOUT_MAX_MS = 300_000;
+const PAGE_ANALYSIS_TIMEOUT_MS = 360_000;
 const CHUNK_SYNTHESIS_TIMEOUT_MS = 180_000;
 const SPLIT_DRAFT_CHUNK_TIMEOUT_MS = 240_000;
 const STORY_SYNTHESIS_TIMEOUT_MS = 240_000;
@@ -3354,12 +3353,11 @@ export class TaskOrchestrator {
       return Math.trunc(request.timeoutMs);
     }
 
-    if (request.stage === 'analyze-pages' && request.imageNames.length > 1) {
-      const imageCount = request.imageNames.length;
-      const timeoutMs = isGeminiFamilyModel(provider, model)
-        ? PAGE_ANALYSIS_BATCH_TIMEOUT_MS + imageCount * 15_000
-        : PAGE_ANALYSIS_BATCH_TIMEOUT_MS + Math.max(0, imageCount - 2) * 8_000;
-      return Math.min(PAGE_ANALYSIS_BATCH_TIMEOUT_MAX_MS, timeoutMs);
+    void provider;
+    void model;
+
+    if (request.stage === 'analyze-pages') {
+      return PAGE_ANALYSIS_TIMEOUT_MS;
     }
 
     return null;
