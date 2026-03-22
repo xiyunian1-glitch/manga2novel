@@ -91,6 +91,21 @@ export function getTroubleshootingAdvice(error?: string | null): Troubleshooting
     );
   }
 
+  if (/request failed\s*\(524\)|\b524\b|cloudflare|html error page/i.test(message)) {
+    return createAdvice(
+      'gateway-proxy-failure',
+      '网关/代理超时',
+      '上游网关超时了，返回了错误页而不是模型 JSON',
+      '这通常说明请求已经到达你配置的网关或代理，但它等待上游模型太久，被 Cloudflare 或类似网关超时截断了。',
+      [
+        '先直接重试一次，524 很常见于上游偶发超时。',
+        '减少每组图片数、降低并发，缩短单次请求处理时间。',
+        '如果是兼容网关，检查它到真实上游模型的转发链路是否稳定。',
+        '如果 baseUrl 前面挂了 Cloudflare/CDN，确认该链路允许长时间推理请求。',
+      ]
+    );
+  }
+
   if (/truncated the completion|finish_reason\s*=\s*length/i.test(message)) {
     return createAdvice(
       'output-truncated',

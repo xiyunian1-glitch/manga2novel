@@ -264,6 +264,9 @@ function summarizeResponseBody(text: string): string {
   if (!normalized) {
     return 'empty response';
   }
+  if (looksLikeHtml(normalized)) {
+    return 'returned an HTML error page';
+  }
   return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
 }
 
@@ -730,6 +733,12 @@ async function parseJsonResponse<T>(
   const responseText = await response.text();
 
   if (!response.ok) {
+    if (looksLikeHtml(responseText)) {
+      if (response.status === 524) {
+        throw new Error(`${context} (524): upstream gateway timed out and returned an HTML error page`);
+      }
+      throw new Error(`${context} (${response.status}): returned an HTML error page; check API URL, proxy, or upstream gateway`);
+    }
     throw new Error(`${context} (${response.status}): ${summarizeResponseBody(responseText)}`);
   }
 

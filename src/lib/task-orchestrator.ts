@@ -1480,7 +1480,7 @@ function isHardQuotaExceededError(message: string): boolean {
 
 function isTransientGatewayProxyError(message: string): boolean {
   return (
-    /request failed\s*\((?:502|503|504)\)|bad gateway|gateway timeout|service unavailable/i.test(message)
+    /request failed\s*\((?:502|503|504|524)\)|bad gateway|gateway timeout|service unavailable|html error page|cloudflare/i.test(message)
     || (/targeturl|socketerror|und_err_socket|other side closed|unexpected eof/i.test(message) && /request failed|fetch failed/i.test(message))
   ) && !isBrowserReachabilityError(message);
 }
