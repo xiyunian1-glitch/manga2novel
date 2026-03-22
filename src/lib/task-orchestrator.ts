@@ -182,10 +182,101 @@ const PAGE_ANALYSIS_OUTPUT_SCHEMA = `{
   ]
 }`;
 
+interface PageAnalysisContinuityContext {
+  recentPages: Array<{
+    pageNumber: number;
+    summary: string;
+    characters: Array<{ name: string; role: string }>;
+    dialogue: Array<{ speaker: string; text: string }>;
+  }>;
+  recentCharacterHints: Array<{
+    name: string;
+    roles: string[];
+    seenOnPages: number[];
+  }>;
+}
+
+function buildPageAnalysisContinuityContext(
+  allPageAnalyses: PageAnalysis[],
+  firstPageNumber: number
+): PageAnalysisContinuityContext | null {
+  const previousPages = allPageAnalyses
+    .filter((page) => page.pageNumber < firstPageNumber && page.status === 'success')
+    .sort((left, right) => left.pageNumber - right.pageNumber);
+
+  if (previousPages.length === 0) {
+    return null;
+  }
+
+  const recentPages = previousPages
+    .slice(-2)
+    .map((page) => ({
+      pageNumber: page.pageNumber,
+      summary: compactText(page.summary, 100),
+      characters: page.characters
+        .filter((character) => character.name && character.name !== '未知')
+        .slice(0, 4)
+        .map((character) => ({
+          name: compactText(character.name, 20),
+          role: compactText(character.role, 28),
+        })),
+      dialogue: page.dialogue
+        .filter((line) => line.text)
+        .slice(0, 4)
+        .map((line) => ({
+          speaker: compactText(line.speaker || '未确认', 20),
+          text: compactText(line.text, 40),
+        })),
+    }));
+
+  const recentCharacterHintsMap = new Map<string, { name: string; roles: Set<string>; seenOnPages: number[] }>();
+  previousPages.slice(-6).forEach((page) => {
+    page.characters.forEach((character) => {
+      const name = sanitizeNarrativeText(character.name);
+      if (!name || name === '未知') {
+        return;
+      }
+
+      const existing = recentCharacterHintsMap.get(name) || {
+        name,
+        roles: new Set<string>(),
+        seenOnPages: [],
+      };
+
+      const role = sanitizeNarrativeText(character.role);
+      if (role) {
+        existing.roles.add(compactText(role, 28));
+      }
+      if (!existing.seenOnPages.includes(page.pageNumber)) {
+        existing.seenOnPages.push(page.pageNumber);
+      }
+      recentCharacterHintsMap.set(name, existing);
+    });
+  });
+
+  const recentCharacterHints = Array.from(recentCharacterHintsMap.values())
+    .slice(0, 8)
+    .map((character) => ({
+      name: compactText(character.name, 20),
+      roles: Array.from(character.roles).slice(0, 3),
+      seenOnPages: character.seenOnPages.slice(-4),
+    }));
+
+  if (recentPages.length === 0 && recentCharacterHints.length === 0) {
+    return null;
+  }
+
+  return {
+    recentPages,
+    recentCharacterHints,
+  };
+}
+
 function buildPageAnalysisPrompt(
   chunkIndex: number,
   pages: Array<Pick<PageAnalysis, 'pageNumber' | 'imageName'>>,
-  totalPages: number
+  totalPages: number,
+  continuityContext?: PageAnalysisContinuityContext | null
 ): string {
   const firstPageNumber = pages[0]?.pageNumber ?? 1;
   const lastPageNumber = pages[pages.length - 1]?.pageNumber ?? firstPageNumber;
@@ -209,7 +300,17 @@ function buildPageAnalysisPrompt(
     '7. If a speaker is uncertain, use `未确认`. If location or time is uncertain, use `未知`.',
     '8. If text is occluded, cropped, or blurry, omit it instead of guessing.',
     '9. If Chinese and Japanese appear together, keep the Chinese and drop the Japanese; if the Japanese part is a sound effect, convert it into natural Chinese onomatopoeia instead of keeping the original kana.',
-    '10. Keep JSON string values single-line. Escape line breaks as `\\n`.',
+    '10. You may use the recent continuity context only as a weak aid for recurring character naming and speaker consistency when the current page visually supports it.',
+    '11. Never let continuity context override the current page evidence, and never copy previous-page events into the current page result.',
+    '12. If the current page still lacks enough support, keep `未确认` or `未知` instead of forcing a carry-over name.',
+    '13. Keep JSON string values single-line. Escape line breaks as `\\n`.',
+    continuityContext
+      ? [
+          '',
+          '[Recent continuity context for naming only]',
+          JSON.stringify(continuityContext, null, 2),
+        ].join('\n')
+      : '',
     '',
     '[Target pages in order]',
     JSON.stringify(pageList, null, 2),
@@ -3877,7 +3978,12 @@ export class TaskOrchestrator {
             label: `[Page ${item.pageNumber}] file=${item.image!.file.webkitRelativePath || item.image!.file.name}`,
           })),
           systemPrompt: PAGE_ANALYSIS_SYSTEM_PROMPT,
-          userPrompt: buildPageAnalysisPrompt(chunkIndex, pageBatch, this.state.pageAnalyses.length),
+          userPrompt: buildPageAnalysisPrompt(
+            chunkIndex,
+            pageBatch,
+            this.state.pageAnalyses.length,
+            buildPageAnalysisContinuityContext(this.state.pageAnalyses, firstPageNumber)
+          ),
           temperature: PAGE_ANALYSIS_TEMPERATURE,
           maxOutputTokens: this.getPageAnalysisMaxTokens(pageBatch.length, stageAPIConfig.provider, model),
           userPromptPlacement: 'after-media',
