@@ -2332,6 +2332,33 @@ export class TaskOrchestrator {
     return this.state.chunks.flatMap((chunk) => chunk.images);
   }
 
+  private async ensureImageProcessed(image: ImageItem, label: string): Promise<void> {
+    if (image.processedBase64 && image.processedMime) {
+      if (image.status !== 'ready') {
+        image.status = 'ready';
+        this.emit('image-processed');
+      }
+      return;
+    }
+
+    image.status = 'processing';
+    this.emit('image-processed');
+
+    try {
+      const result = await processImage(image.file);
+      image.processedBase64 = result.base64;
+      image.processedMime = result.mime;
+      image.compressedSize = result.compressedSize;
+      image.status = 'ready';
+      this.emit('image-processed');
+    } catch (error) {
+      image.status = 'error';
+      this.emit('image-processed');
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to reprocess ${label}: ${message}`);
+    }
+  }
+
   private getAllImageNames(): string[] {
     const chunkImageNames = this.state.chunks.flatMap((chunk) => (
       chunk.images.map((image) => image.file.webkitRelativePath || image.file.name)
@@ -2358,13 +2385,17 @@ export class TaskOrchestrator {
   private getChunkRequestImages(
     chunkIndex: number,
     labels?: string[]
-  ): Array<{ base64: string; mime: string; label?: string }> {
+  ): Promise<Array<{ base64: string; mime: string; label?: string }>> {
     const chunk = this.state.chunks[chunkIndex];
     if (!chunk) {
-      return [];
+      return Promise.resolve([]);
     }
 
-    return chunk.images.map((image, imageIndex) => {
+    return Promise.all(
+      chunk.images.map((image, imageIndex) => (
+        this.ensureImageProcessed(image, `第 ${chunkIndex + 1} 块第 ${imageIndex + 1} 张图片`)
+      ))
+    ).then(() => chunk.images.map((image, imageIndex) => {
       if (!image.processedBase64 || !image.processedMime) {
         throw new Error(`Missing processed image data for chunk ${chunkIndex + 1}, image ${imageIndex + 1}.`);
       }
@@ -2374,7 +2405,7 @@ export class TaskOrchestrator {
         mime: image.processedMime,
         label: labels?.[imageIndex],
       };
-    });
+    }));
   }
 
   private getSplitDraftSectionSourceLength(): number {
@@ -2432,6 +2463,7 @@ export class TaskOrchestrator {
     }
 
     if (this.isSplitDraftMode()) {
+      const chunkRequestImages = await this.getChunkRequestImages(chunkIndex);
       return this.requestStructuredData(
         chunkSynthesis,
         {
@@ -2439,7 +2471,7 @@ export class TaskOrchestrator {
           itemLabel: `第 ${chunkSynthesis.index + 1} 部分生成`,
           chunkIndex: chunkSynthesis.index,
           imageNames: this.getChunkImageNames(chunkIndex),
-          images: this.getChunkRequestImages(chunkIndex),
+          images: chunkRequestImages,
           systemPrompt: CHUNK_SYNTHESIS_SYSTEM_PROMPT,
           userPrompt: buildSplitDraftChunkPrompt(
             chunkSynthesis.index,
@@ -2513,6 +2545,7 @@ export class TaskOrchestrator {
     }
 
     try {
+      const chunkRequestImages = await this.getChunkRequestImages(chunkIndex, chunkImageLabels);
       return await this.requestStructuredData(
         chunkSynthesis,
         {
@@ -2520,7 +2553,7 @@ export class TaskOrchestrator {
           itemLabel: `第 ${chunkSynthesis.index + 1} 块综合`,
           chunkIndex: chunkSynthesis.index,
           imageNames: relatedPages.map((page) => page.imageName),
-          images: this.getChunkRequestImages(chunkIndex, chunkImageLabels),
+          images: chunkRequestImages,
           systemPrompt: CHUNK_SYNTHESIS_SYSTEM_PROMPT,
           userPrompt: buildContextualChunkSynthesisPrompt(chunkSynthesis.index, relatedPages, {
             previousChunk: chunkIndex > 0
@@ -2662,14 +2695,20 @@ export class TaskOrchestrator {
       .map((page) => page.imageName);
   }
 
-  private getSectionSceneImageEntries(section: NovelSection): SectionSceneImageEntry[] {
+  private async getSectionSceneImageEntries(section: NovelSection): Promise<SectionSceneImageEntry[]> {
     const allImages = this.getReadyImagesInOrder();
 
-    return this.state.pageAnalyses
+    return Promise.all(this.state.pageAnalyses
       .filter((page) => section.chunkIndexes.includes(page.chunkIndex))
-      .map((page) => {
+      .map(async (page) => {
         const image = allImages[page.index];
-        if (!image?.processedBase64 || !image.processedMime) {
+        if (!image) {
+          throw new Error(`Missing processed image data for section ${section.index + 1}, page ${page.pageNumber}.`);
+        }
+
+        await this.ensureImageProcessed(image, `第 ${section.index + 1} 节第 ${page.pageNumber} 页`);
+
+        if (!image.processedBase64 || !image.processedMime) {
           throw new Error(`Missing processed image data for section ${section.index + 1}, page ${page.pageNumber}.`);
         }
 
@@ -2679,7 +2718,7 @@ export class TaskOrchestrator {
           base64: image.processedBase64,
           mime: image.processedMime,
         };
-      });
+      }));
   }
 
   private shouldIncludeSceneImagesForSectionWriting(section: NovelSection): boolean {
@@ -2704,8 +2743,8 @@ export class TaskOrchestrator {
       .filter((entry): entry is SectionSceneImageEntry => Boolean(entry));
   }
 
-  private buildSectionWritingImageAttempts(section: NovelSection): SectionSceneImageEntry[][] {
-    const sectionImageEntries = this.getSectionSceneImageEntries(section);
+  private async buildSectionWritingImageAttempts(section: NovelSection): Promise<SectionSceneImageEntry[][]> {
+    const sectionImageEntries = await this.getSectionSceneImageEntries(section);
     if (sectionImageEntries.length === 0) {
       return [];
     }
@@ -2795,7 +2834,7 @@ export class TaskOrchestrator {
       return requestSectionDraft([]);
     }
 
-    const imageAttempts = this.buildSectionWritingImageAttempts(section);
+    const imageAttempts = await this.buildSectionWritingImageAttempts(section);
     let lastImageError: unknown = null;
 
     for (let attemptIndex = 0; attemptIndex < imageAttempts.length; attemptIndex += 1) {
@@ -3800,13 +3839,16 @@ export class TaskOrchestrator {
   ): Promise<void> {
     const stageAPIConfig = this.resolveAPIConfigForStage('analyze-pages');
     const model = this.resolveModelForStage('analyze-pages');
-    const chunkImages = pageBatch.map((pageAnalysis) => {
+    const chunkImages = await Promise.all(pageBatch.map(async (pageAnalysis) => {
       const image = readyImages[pageAnalysis.index];
+      if (image) {
+        await this.ensureImageProcessed(image, `第 ${pageAnalysis.pageNumber} 页`);
+      }
       return {
         pageNumber: pageAnalysis.pageNumber,
         image,
       };
-    });
+    }));
     const missingImage = chunkImages.find((item) => !item.image?.processedBase64 || !item.image?.processedMime);
 
     if (missingImage) {
