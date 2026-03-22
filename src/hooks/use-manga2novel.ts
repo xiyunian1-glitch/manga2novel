@@ -1195,7 +1195,7 @@ const startProcessing = useCallback(async () => {
   }, [orchestrator]);
 
   const reset = useCallback(() => {
-    if (!window.confirm('确认重置当前任务吗？这会清空已上传图片、处理进度和生成结果。')) {
+    if (!window.confirm('确认重置当前任务吗？这会保留已上传图片，只清空处理进度和生成结果。')) {
       return;
     }
 
