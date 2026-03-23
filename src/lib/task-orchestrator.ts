@@ -322,7 +322,7 @@ function buildPageAnalysisPrompt(
 
 const PAGE_ANALYSIS_TEMPERATURE = 0.1;
 const SYNTHESIS_TEMPERATURE = 0.2;
-const PAGE_ANALYSIS_MAX_TOKENS = 2048;
+const PAGE_ANALYSIS_MAX_TOKENS = 4096;
 const PAGE_ANALYSIS_TOKEN_HEADROOM_PAGES = 2;
 const SYNTHESIS_MAX_TOKENS = 6144;
 const SPLIT_DRAFT_CHUNK_MAX_TOKENS = 8192;
@@ -1553,6 +1553,33 @@ function parseMaxTokenLimitError(message: string): { requestedTotal: number; max
   return { requestedTotal, maxSeqLen };
 }
 
+function parseEmptyCompletionUsage(message: string): {
+  finishReason?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+} | null {
+  if (!/returned an empty completion|empty response/i.test(message)) {
+    return null;
+  }
+
+  const finishReasonMatch = message.match(/finish_reason\s*=\s*([a-z0-9._-]+)/i);
+  const promptTokensMatch = message.match(/prompt_tokens\s*=\s*(\d+)/i);
+  const completionTokensMatch = message.match(/completion_tokens\s*=\s*(\d+)/i);
+
+  if (!finishReasonMatch && !promptTokensMatch && !completionTokensMatch) {
+    return null;
+  }
+
+  const promptTokens = promptTokensMatch ? Number(promptTokensMatch[1]) : undefined;
+  const completionTokens = completionTokensMatch ? Number(completionTokensMatch[1]) : undefined;
+
+  return {
+    finishReason: finishReasonMatch?.[1]?.toLowerCase(),
+    promptTokens: typeof promptTokens === 'number' && Number.isFinite(promptTokens) ? promptTokens : undefined,
+    completionTokens: typeof completionTokens === 'number' && Number.isFinite(completionTokens) ? completionTokens : undefined,
+  };
+}
+
 function isInputTokenLimitError(message: string): boolean {
   return /prompt_tokens\s*\(\d+\)\s*must be less than max_seq_len\s*\(\d+\)/i.test(message);
 }
@@ -1629,6 +1656,34 @@ function isEmptyCompletionError(message: string): boolean {
 function isTransientEmptyCompletionError(message: string): boolean {
   return /returned an empty completion.*finish_reason\s*=\s*stop.*completion_tokens\s*=\s*0/i.test(message)
     || /returned an empty completion.*completion_tokens\s*=\s*0.*blocked or discarded the response/i.test(message);
+}
+
+function shouldRetryEmptyCompletionWithHigherMaxTokens(
+  message: string,
+  currentMaxOutputTokens: number | undefined
+): boolean {
+  if (typeof currentMaxOutputTokens !== 'number' || !Number.isFinite(currentMaxOutputTokens) || currentMaxOutputTokens <= 0) {
+    return false;
+  }
+
+  const usage = parseEmptyCompletionUsage(message);
+  if (!usage) {
+    return false;
+  }
+
+  if (usage.completionTokens !== 0) {
+    return false;
+  }
+
+  if (usage.finishReason && usage.finishReason !== 'stop') {
+    return false;
+  }
+
+  if (typeof usage.promptTokens !== 'number') {
+    return false;
+  }
+
+  return usage.promptTokens >= Math.max(1, currentMaxOutputTokens - 128);
 }
 
 function isSafetyFilteringError(message: string): boolean {
@@ -5164,6 +5219,32 @@ export class TaskOrchestrator {
             nextAction: '输入过长，停止当前请求的自动重试',
           });
           break;
+        }
+
+        if (shouldRetryEmptyCompletionWithHigherMaxTokens(errorMessage, currentMaxOutputTokens)) {
+          const maxRetryOutputTokens = getTruncationRetryTokenCap(
+            request.stage,
+            stageAPIConfig.provider,
+            model
+          );
+          const nextMaxOutputTokens = Math.min(
+            maxRetryOutputTokens,
+            Math.max(
+              currentMaxOutputTokens + (request.stage === 'analyze-pages' && request.imageNames.length > 1 ? 2048 : 1024),
+              currentMaxOutputTokens * 2
+            )
+          );
+
+          if (nextMaxOutputTokens > currentMaxOutputTokens) {
+            currentMaxOutputTokens = nextMaxOutputTokens;
+            target.error = undefined;
+            finishAttemptTrace(attemptTraceSequence, 'error', {
+              error: errorMessage,
+              nextAction: `检测到 prompt_tokens 已逼近 max_tokens，自动提高 max_tokens 到 ${nextMaxOutputTokens} 后立即重试`,
+            });
+            attempt -= 1;
+            continue;
+          }
         }
 
         if (truncatedCompletionError) {
