@@ -40,7 +40,7 @@ type CompatibleChatCompletionResponse = {
   error?: {
     message?: string;
     type?: string;
-    code?: string;
+    code?: string | number | null;
   };
   usage?: {
     prompt_tokens?: number;
@@ -1115,7 +1115,13 @@ async function callCompatibleText(
     );
 
     if (typeof data.error?.message === 'string' && data.error.message.trim()) {
-      const codeSuffix = data.error.code?.trim() ? ` (code=${data.error.code.trim()})` : '';
+      const errorCode = (
+        typeof data.error.code === 'string'
+        || typeof data.error.code === 'number'
+      )
+        ? String(data.error.code).trim()
+        : '';
+      const codeSuffix = errorCode ? ` (code=${errorCode})` : '';
       throw new Error(`${data.error.message.trim()}${codeSuffix}`);
     }
 
