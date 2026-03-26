@@ -1595,15 +1595,25 @@ function shouldFallbackChunkSynthesisToTextOnly(message: string): boolean {
 }
 
 function isCapacityAvailabilityError(message: string): boolean {
-  return isTransientCapacityError(message) || isHardQuotaExceededError(message);
+  return isTransientCapacityError(message)
+    || isTransientRateLimitError(message)
+    || isHardQuotaExceededError(message);
 }
 
 function isTransientCapacityError(message: string): boolean {
   return /no capacity available for model|model .* is at capacity|currently at capacity|capacity unavailable|server is busy|overloaded/i.test(message);
 }
 
+function isTransientRateLimitError(message: string): boolean {
+  if (isHardQuotaExceededError(message)) {
+    return false;
+  }
+
+  return /\b429\b|rate[_ -]?limit(?:ed)?|too many requests|rate limit exceeded|rate_limit_exceeded|requests per (?:minute|min|day)|tokens per (?:minute|min)|retry after|try again in/i.test(message);
+}
+
 function isHardQuotaExceededError(message: string): boolean {
-  return /resource has been exhausted|quota(?:\s+has)?\s+been exhausted|check quota|insufficient quota|quota exceeded|billing hard limit|credit balance/i.test(message);
+  return /resource has been exhausted|quota(?:\s+has)?\s+been exhausted|check quota|insufficient quota|insufficient_quota|quota exceeded|billing hard limit|credit balance/i.test(message);
 }
 
 function isTransientGatewayProxyError(message: string): boolean {
@@ -1707,23 +1717,49 @@ function isPageAnalysisStructureError(message: string): boolean {
 }
 
 function parseRetryAfterDelayMs(message: string): number | null {
-  const match = message.match(/(?:reset|retry)\s+after\s+(\d+)\s*(ms|milliseconds?|s|sec|seconds?)/i);
-  if (!match) {
-    return null;
+  const normalized = message.replace(/[_=]/g, ' ');
+  const patterns = [
+    /(?:reset|retry|try again|available)\s+(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?|m|min|minutes?)/i,
+    /retry[-\s]?after\s*[: ]\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?|m|min|minutes?)?/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (!match) {
+      continue;
+    }
+
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+
+    const unit = String(match[2] || '').toLowerCase();
+    if (!unit) {
+      return amount * 1000;
+    }
+
+    if (unit === 'ms' || unit.startsWith('millisecond')) {
+      return amount;
+    }
+
+    if (unit === 'm' || unit.startsWith('min')) {
+      return amount * 60_000;
+    }
+
+    return amount * 1000;
   }
 
-  const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null;
-  }
-
-  const unit = match[2].toLowerCase();
-  return unit.startsWith('m') ? amount : amount * 1000;
+  return null;
 }
 
 function getImplicitRecoveryRetryLimit(message: string): number {
   if (isHardQuotaExceededError(message)) {
     return 0;
+  }
+
+  if (isTransientRateLimitError(message)) {
+    return 2;
   }
 
   if (isTransientGatewayProxyError(message)) {
@@ -1756,10 +1792,19 @@ function shouldAttemptImplicitRecoveryRetry(
   );
 }
 
-function getImplicitRecoveryRetryDelayMs(message: string, fallbackDelayMs: number): number {
+function getImplicitRecoveryRetryDelayMs(
+  message: string,
+  fallbackDelayMs: number,
+  recoveryAttempt: number
+): number {
   const hintedDelay = parseRetryAfterDelayMs(message);
   if (hintedDelay !== null) {
-    return Math.min(30_000, Math.max(1_000, hintedDelay + 500));
+    return Math.min(120_000, Math.max(1_000, hintedDelay + 500));
+  }
+
+  if (isTransientRateLimitError(message)) {
+    const baseDelay = Math.max(15_000, fallbackDelayMs * 5);
+    return Math.min(90_000, baseDelay * Math.max(1, recoveryAttempt));
   }
 
   if (isTransientGatewayProxyError(message)) {
@@ -5194,6 +5239,7 @@ export class TaskOrchestrator {
         const truncatedCompletionError = isTruncatedCompletionError(errorMessage);
         const hardQuotaExceededError = isHardQuotaExceededError(errorMessage);
         const transientCapacityError = isTransientCapacityError(errorMessage);
+        const transientRateLimitError = isTransientRateLimitError(errorMessage);
 
         if (tokenLimitError) {
           const overflow = Math.max(1, tokenLimitError.requestedTotal - tokenLimitError.maxSeqLen);
@@ -5364,12 +5410,18 @@ export class TaskOrchestrator {
           && implicitRecoveryAttempts < implicitRecoveryRetryLimit
         ) {
           implicitRecoveryAttempts += 1;
-          const delay = getImplicitRecoveryRetryDelayMs(errorMessage, this.state.config.retryDelay);
+          const delay = getImplicitRecoveryRetryDelayMs(
+            errorMessage,
+            this.state.config.retryDelay,
+            implicitRecoveryAttempts
+          );
           target.retryCount = attempt + implicitRecoveryAttempts;
           target.error = undefined;
-          const recoveryReason = isTransientGatewayProxyError(errorMessage)
-            ? '兼容接口或上游网关疑似短暂抖动'
-            : '兼容接口疑似短暂容量不足或空回';
+          const recoveryReason = transientRateLimitError
+            ? '兼容接口或上游模型正在限流'
+            : isTransientGatewayProxyError(errorMessage)
+              ? '兼容接口或上游网关疑似短暂抖动'
+              : '兼容接口疑似短暂容量不足或空回';
           finishAttemptTrace(attemptTraceSequence, 'error', {
             error: errorMessage,
             nextAction: `${recoveryReason}，${delay} ms 后自动恢复重试`,
@@ -5379,14 +5431,20 @@ export class TaskOrchestrator {
           continue;
         }
 
-        if ((transientCapacityError || isTransientGatewayProxyError(errorMessage)) && implicitRecoveryRetryLimit > 0) {
+        if (
+          stageAPIConfig.provider === 'compatible'
+          && (transientRateLimitError || transientCapacityError || isTransientGatewayProxyError(errorMessage))
+          && implicitRecoveryRetryLimit > 0
+        ) {
           target.retryCount = attempt + 1;
           target.error = errorMessage;
           finishAttemptTrace(attemptTraceSequence, 'error', {
             error: errorMessage,
-            nextAction: transientCapacityError
-              ? '上游容量短时未恢复，停止自动重试'
-              : '兼容接口或网关短时故障未恢复，停止自动重试',
+            nextAction: transientRateLimitError
+              ? '兼容接口或上游模型仍在限流，停止自动重试'
+              : transientCapacityError
+                ? '上游容量短时未恢复，停止自动重试'
+                : '兼容接口或网关短时故障未恢复，停止自动重试',
           });
           break;
         }

@@ -270,6 +270,41 @@ function summarizeResponseBody(text: string): string {
   return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
 }
 
+function formatRetryAfterHeaderValue(headerValue: string): string | null {
+  const normalized = headerValue.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^\d+(?:\.\d+)?$/i.test(normalized)) {
+    return `${normalized}s`;
+  }
+
+  const parsedDate = Date.parse(normalized);
+  if (Number.isFinite(parsedDate)) {
+    const retryAfterMs = parsedDate - Date.now();
+    if (retryAfterMs > 0) {
+      return `${Math.max(1, Math.ceil(retryAfterMs / 1000))}s`;
+    }
+  }
+
+  return normalized.length > 40 ? `${normalized.slice(0, 40)}...` : normalized;
+}
+
+function getRetryAfterErrorHint(response: Response): string {
+  const retryAfter = formatRetryAfterHeaderValue(response.headers.get('Retry-After') || '');
+  if (retryAfter) {
+    return ` retry after ${retryAfter}`;
+  }
+
+  const retryAfterMs = response.headers.get('Retry-After-Ms')?.trim() || '';
+  if (/^\d+(?:\.\d+)?$/i.test(retryAfterMs)) {
+    return ` retry after ${retryAfterMs}ms`;
+  }
+
+  return '';
+}
+
 function looksLikeHtml(text: string): boolean {
   return /<!doctype html|<html[\s>]/i.test(text);
 }
@@ -739,7 +774,8 @@ async function parseJsonResponse<T>(
       }
       throw new Error(`${context} (${response.status}): returned an HTML error page; check API URL, proxy, or upstream gateway`);
     }
-    throw new Error(`${context} (${response.status}): ${summarizeResponseBody(responseText)}`);
+    const retryAfterHint = getRetryAfterErrorHint(response);
+    throw new Error(`${context} (${response.status}): ${summarizeResponseBody(responseText)}${retryAfterHint}`);
   }
 
   try {
