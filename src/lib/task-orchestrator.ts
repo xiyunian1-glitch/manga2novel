@@ -2996,13 +2996,13 @@ export class TaskOrchestrator {
       .filter((page) => section.chunkIndexes.includes(page.chunkIndex))
       .length;
     const chunkCount = Math.max(1, section.chunkIndexes.length);
-    const writingModeMultiplier = this.state.creativeSettings.writingMode === 'literary' ? 1.2 : 1;
+    const writingModeMultiplier = this.state.creativeSettings.writingMode === 'literary' ? 1.25 : 1;
     const estimatedTokens = Math.ceil(
-      (2048 + Math.max(0, pageCount - 1) * 384 + Math.max(0, chunkCount - 1) * 320)
+      (3072 + Math.max(0, pageCount - 1) * 512 + Math.max(0, chunkCount - 1) * 384)
       * writingModeMultiplier
     );
 
-    return Math.min(WRITING_MAX_TOKENS, Math.max(3072, estimatedTokens));
+    return Math.min(WRITING_MAX_TOKENS, Math.max(4096, estimatedTokens));
   }
 
   private async requestSectionWritingResult(
