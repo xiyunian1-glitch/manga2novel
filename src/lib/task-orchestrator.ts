@@ -1669,9 +1669,14 @@ function isTransientEmptyCompletionError(message: string): boolean {
 }
 
 function shouldRetryEmptyCompletionWithHigherMaxTokens(
+  stage: RequestStage,
   message: string,
   currentMaxOutputTokens: number | undefined
 ): boolean {
+  if (stage === 'write-sections') {
+    return false;
+  }
+
   if (typeof currentMaxOutputTokens !== 'number' || !Number.isFinite(currentMaxOutputTokens) || currentMaxOutputTokens <= 0) {
     return false;
   }
@@ -2986,12 +2991,27 @@ export class TaskOrchestrator {
     );
   }
 
+  private getSectionWritingMaxOutputTokens(section: NovelSection): number {
+    const pageCount = this.state.pageAnalyses
+      .filter((page) => section.chunkIndexes.includes(page.chunkIndex))
+      .length;
+    const chunkCount = Math.max(1, section.chunkIndexes.length);
+    const writingModeMultiplier = this.state.creativeSettings.writingMode === 'literary' ? 1.2 : 1;
+    const estimatedTokens = Math.ceil(
+      (2048 + Math.max(0, pageCount - 1) * 384 + Math.max(0, chunkCount - 1) * 320)
+      * writingModeMultiplier
+    );
+
+    return Math.min(WRITING_MAX_TOKENS, Math.max(3072, estimatedTokens));
+  }
+
   private async requestSectionWritingResult(
     sectionIndex: number,
     section: NovelSection,
     scenePlan: ScenePlan
   ): Promise<{ novelText: string; continuitySummary: string }> {
     const includeSceneImages = this.shouldIncludeSceneImagesForSectionWriting(section);
+    const sectionMaxOutputTokens = this.getSectionWritingMaxOutputTokens(section);
     const sectionUserPrompt = buildSectionUserPrompt(
       sectionIndex,
       this.state.globalSynthesis,
@@ -3022,7 +3042,7 @@ export class TaskOrchestrator {
           systemPrompt: buildSectionSystemPrompt(this.state.creativeSettings.systemPrompt),
           userPrompt: sectionUserPrompt,
           temperature: this.state.creativeSettings.temperature,
-          maxOutputTokens: WRITING_MAX_TOKENS,
+          maxOutputTokens: sectionMaxOutputTokens,
           timeoutMs: SECTION_WRITING_TIMEOUT_MS,
           userPromptPlacement,
         },
@@ -5267,7 +5287,11 @@ export class TaskOrchestrator {
           break;
         }
 
-        if (shouldRetryEmptyCompletionWithHigherMaxTokens(errorMessage, currentMaxOutputTokens)) {
+        if (shouldRetryEmptyCompletionWithHigherMaxTokens(
+          request.stage,
+          errorMessage,
+          currentMaxOutputTokens
+        )) {
           const maxRetryOutputTokens = getTruncationRetryTokenCap(
             request.stage,
             stageAPIConfig.provider,
