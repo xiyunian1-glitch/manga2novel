@@ -53,8 +53,8 @@ import {
   CREATIVE_PRESETS,
   CUSTOM_PRESET_ID,
   composeSystemPrompt,
-  DEFAULT_SUPPLEMENTAL_PROMPT,
   resolveCreativePresetId,
+  sanitizeSupplementalPrompt,
   splitSystemPrompt,
   SYSTEM_PROMPT,
   SYSTEM_PROMPT_BODY,
@@ -62,7 +62,7 @@ import {
 } from '@/lib/prompts';
 
 let idCounter = 0;
-const CREATIVE_SETTINGS_TEMPLATE_VERSION = 7;
+const CREATIVE_SETTINGS_TEMPLATE_VERSION = 8;
 const ORCHESTRATOR_CONFIG_TEMPLATE_VERSION = 2;
 const API_PROFILES_STORAGE_KEY = 'apiProfiles';
 const ACTIVE_API_PROFILE_ID_STORAGE_KEY = 'activeApiProfileId';
@@ -683,11 +683,16 @@ export function useManga2Novel() {
         ...savedCreativeSettings,
       };
 
-      if (savedCreativeSettingsTemplateVersion !== CREATIVE_SETTINGS_TEMPLATE_VERSION) {
-        const { supplementalPrompt, roleAndStyle } = splitSystemPrompt(nextCreativeSettings.systemPrompt);
+      const promptParts = splitSystemPrompt(nextCreativeSettings.systemPrompt);
+      const sanitizedSupplementalPrompt = sanitizeSupplementalPrompt(promptParts.supplementalPrompt);
+
+      if (
+        savedCreativeSettingsTemplateVersion !== CREATIVE_SETTINGS_TEMPLATE_VERSION
+        || sanitizedSupplementalPrompt !== promptParts.supplementalPrompt.trim()
+      ) {
         nextCreativeSettings.systemPrompt = composeSystemPrompt(
-          supplementalPrompt.trim() || DEFAULT_SUPPLEMENTAL_PROMPT,
-          roleAndStyle,
+          sanitizedSupplementalPrompt,
+          promptParts.roleAndStyle,
           SYSTEM_PROMPT_BODY
         );
         nextCreativeSettings.userPromptTemplate = (nextCreativeSettings.userPromptTemplate.trim() || USER_PROMPT_TEMPLATE)
@@ -965,7 +970,11 @@ export function useManga2Novel() {
       if (preset) {
         const { roleAndStyle } = splitSystemPrompt(preset.prompt);
         const { supplementalPrompt, systemPromptBody } = splitSystemPrompt(currentSettings.systemPrompt);
-        nextSettings.systemPrompt = composeSystemPrompt(supplementalPrompt, roleAndStyle, systemPromptBody);
+        nextSettings.systemPrompt = composeSystemPrompt(
+          sanitizeSupplementalPrompt(supplementalPrompt),
+          roleAndStyle,
+          systemPromptBody
+        );
       }
     }
 
@@ -990,7 +999,11 @@ export function useManga2Novel() {
     const { supplementalPrompt, systemPromptBody } = splitSystemPrompt(orchestrator.getState().creativeSettings.systemPrompt);
     updateCreativeSettings({
       presetId: preset.id,
-      systemPrompt: composeSystemPrompt(supplementalPrompt, roleAndStyle, systemPromptBody),
+      systemPrompt: composeSystemPrompt(
+        sanitizeSupplementalPrompt(supplementalPrompt),
+        roleAndStyle,
+        systemPromptBody
+      ),
     });
   }, [creativePresets, orchestrator, updateCreativeSettings]);
 

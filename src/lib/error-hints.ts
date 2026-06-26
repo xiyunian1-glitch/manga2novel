@@ -247,7 +247,7 @@ export function getTroubleshootingAdvice(error?: string | null): Troubleshooting
     );
   }
 
-  if (/safety filtering|refused the request|cannot fulfill this request|sexually explicit|safety guidelines/i.test(message)) {
+  if (/safety filtering|refused the request|cannot fulfill this request|safety guidelines/i.test(message)) {
     return createAdvice(
       'safety-blocked',
       '上游拦截',

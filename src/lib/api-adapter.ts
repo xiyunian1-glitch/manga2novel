@@ -523,8 +523,8 @@ function looksLikeSafetyRefusal(text: string): boolean {
     normalized.includes('i cannot fulfill this request')
     && normalized.includes('helpful and harmless ai assistant')
   ) || (
-    normalized.includes('sexually explicit')
-    && normalized.includes('safety guidelines')
+    normalized.includes('safety guidelines')
+    && (normalized.includes('cannot') || normalized.includes('unable') || normalized.includes('not able'))
   );
 }
 

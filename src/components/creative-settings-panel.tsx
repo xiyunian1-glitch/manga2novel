@@ -129,7 +129,7 @@ export function CreativeSettingsPanel({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            选择预设时只会替换“风格”内容，不会改动补充提示和系统提示词。
+            选择预设时只会替换“风格”内容，不会改动补充提示词和系统提示词。
           </p>
         </div>
 
@@ -181,7 +181,7 @@ export function CreativeSettingsPanel({
 
         <div className="space-y-2.5">
           <div className="flex items-center justify-between gap-3">
-            <Label>特殊提示词</Label>
+            <Label>补充提示词</Label>
             <Button
               type="button"
               variant="outline"
